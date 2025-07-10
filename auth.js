@@ -1,0 +1,6162 @@
+// authRoutes.js
+const express = require('express');
+const router = express.Router();
+const authenticate = require('../middleware/firebase-auth-middleware');
+const admin = require('firebase-admin');
+const db = require('../connect');
+
+const { sendTestEmail } = require('../gmailService'); // update path as needed
+
+// Test route to send email
+router.post('/send-email', async (req, res) => {
+  const { to, subject, message } = req.body;
+
+  if (!to || !subject || !message) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const result = await sendTestEmail(to, subject, message);
+    res.status(200).json({ message: 'Email sent successfully', data: result });
+  } catch (error) {
+    console.error('Error sending email:', error);
+    res.status(500).json({ error: 'Failed to send email' });
+  }
+});
+ 
+
+ 
+
+// Generate a random 6-digit OTP
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// Send OTP to user's email
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required',
+        error: {
+          code: 'MISSING_EMAIL',
+          details: 'No email provided in request body'
+        }
+      });
+    }
+
+    // Check if user exists
+    let users;
+    try {
+      [users] = await db.promise().query(
+        'SELECT id, email, name FROM users WHERE email = ?',
+        [email]
+      );
+    } catch (dbError) {
+      console.error('Database query failed:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database operation failed',
+        error: {
+          code: 'DATABASE_ERROR',
+          details: dbError.message
+        }
+      });
+    }
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: 'No user registered with this email address'
+        }
+      });
+    }
+
+    const user = users[0];
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // OTP valid for 15 minutes
+
+    // Delete any existing OTPs for this user
+    try {
+      await db.promise().query(
+        'DELETE FROM password_reset_otps WHERE user_id = ?',
+        [user.id]
+      );
+    } catch (deleteError) {
+      console.error('Failed to delete existing OTPs:', deleteError);
+      // Continue anyway - we'll try to insert new OTP
+    }
+
+    // Store the new OTP
+    try {
+      await db.promise().query(
+        'INSERT INTO password_reset_otps (user_id, otp, expires_at) VALUES (?, ?, ?)',
+        [user.id, otp, expiresAt]
+      );
+    } catch (insertError) {
+      console.error('Failed to store OTP:', insertError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate password reset token',
+        error: {
+          code: 'OTP_STORAGE_FAILED',
+          details: insertError.message
+        }
+      });
+    }
+
+    // Send OTP via email using Gmail service
+    try {
+      const subject = 'Password Reset OTP';
+      const message = `
+        <h1>Password Reset Request</h1>
+        <p>Hello ${user.name || 'User'},</p>
+        <p>Your OTP for password reset is: <strong>${otp}</strong></p>
+        <p>This OTP is valid for 15 minutes.</p>
+        <p>If you didn't request this, please ignore this email.</p>
+      `;
+
+      await sendTestEmail(user.email, subject, message);
+
+      return res.json({
+        success: true,
+        message: 'OTP sent successfully',
+        data: {
+          email: user.email,
+          expiresAt: expiresAt.toISOString()
+        }
+      });
+
+    } catch (emailError) {
+      console.error('Email sending error:', emailError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send OTP email',
+        error: {
+          code: 'EMAIL_SEND_FAILED',
+          details: emailError.message
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Unexpected error in forgot password:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+// Verify OTP and allow password reset
+router.post('/verify-reset-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and OTP are required',
+        error: {
+          code: 'MISSING_FIELDS',
+          details: 'Both email and OTP must be provided'
+        }
+      });
+    }
+
+    // Find user
+    let users;
+    try {
+      [users] = await db.promise().query(
+        'SELECT id FROM users WHERE email = ?',
+        [email]
+      );
+    } catch (dbError) {
+      console.error('Database query failed:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database operation failed',
+        error: {
+          code: 'DATABASE_ERROR',
+          details: dbError.message
+        }
+      });
+    }
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: 'No user registered with this email address'
+        }
+      });
+    }
+
+    const user = users[0];
+
+    // Find valid OTP
+    let otps;
+    try {
+      [otps] = await db.promise().query(
+        'SELECT * FROM password_reset_otps WHERE user_id = ? AND otp = ? AND expires_at > NOW()',
+        [user.id, otp]
+      );
+    } catch (otpError) {
+      console.error('OTP verification failed:', otpError);
+      return res.status(500).json({
+        success: false,
+        message: 'OTP verification failed',
+        error: {
+          code: 'OTP_VERIFICATION_FAILED',
+          details: otpError.message
+        }
+      });
+    }
+
+    if (!otps.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP',
+        error: {
+          code: 'INVALID_OTP',
+          details: 'The provided OTP is invalid or has expired'
+        }
+      });
+    }
+
+    // If we get here, OTP is valid
+    return res.json({
+      success: true,
+      message: 'OTP verified successfully',
+      data: {
+        email,
+        resetToken: otp // In production, you might generate a more secure token here
+      }
+    });
+
+  } catch (error) {
+    console.error('Unexpected error in OTP verification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+// Reset password after OTP verification
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email, OTP and new password are required',
+        error: {
+          code: 'MISSING_FIELDS',
+          details: 'All fields must be provided'
+        }
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password too short',
+        error: {
+          code: 'PASSWORD_TOO_SHORT',
+          details: 'Password must be at least 8 characters'
+        }
+      });
+    }
+
+    // Find user
+    let users;
+    try {
+      [users] = await db.promise().query(
+        'SELECT id FROM users WHERE email = ?',
+        [email]
+      );
+    } catch (dbError) {
+      console.error('Database query failed:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database operation failed',
+        error: {
+          code: 'DATABASE_ERROR',
+          details: dbError.message
+        }
+      });
+    }
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: 'No user registered with this email address'
+        }
+      });
+    }
+
+    const user = users[0];
+
+    // Verify OTP is still valid
+    let otps;
+    try {
+      [otps] = await db.promise().query(
+        'SELECT * FROM password_reset_otps WHERE user_id = ? AND otp = ? AND expires_at > NOW()',
+        [user.id, otp]
+      );
+    } catch (otpError) {
+      console.error('OTP verification failed:', otpError);
+      return res.status(500).json({
+        success: false,
+        message: 'OTP verification failed',
+        error: {
+          code: 'OTP_VERIFICATION_FAILED',
+          details: otpError.message
+        }
+      });
+    }
+
+    if (!otps.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP',
+        error: {
+          code: 'INVALID_OTP',
+          details: 'The provided OTP is invalid or has expired'
+        }
+      });
+    }
+
+    // Update password in Firebase
+    try {
+      // First get the user's Firebase UID
+      const [userRecords] = await db.promise().query(
+        'SELECT firebase_uid FROM users WHERE id = ?',
+        [user.id]
+      );
+      
+      if (!userRecords.length) {
+        return res.status(404).json({
+          success: false,
+          message: 'Firebase user not found',
+          error: {
+            code: 'FIREBASE_USER_NOT_FOUND',
+            details: 'No Firebase UID associated with this user'
+          }
+        });
+      }
+
+      const firebaseUid = userRecords[0].firebase_uid;
+      
+      // Update password in Firebase
+      await admin.auth().updateUser(firebaseUid, {
+        password: newPassword
+      });
+ 
+  await db.promise().query(
+    'UPDATE users SET password = ? WHERE id = ?',
+    [newPassword, user.id]
+  );
+
+      // Delete the used OTP
+      await db.promise().query(
+        'DELETE FROM password_reset_otps WHERE user_id = ?',
+        [user.id]
+      );
+
+      return res.json({
+        success: true,
+        message: 'Password updated successfully'
+      });
+
+    } catch (firebaseError) {
+      console.error('Firebase password update failed:', firebaseError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update password',
+        error: {
+          code: 'PASSWORD_UPDATE_FAILED',
+          details: firebaseError.message
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Unexpected error in password reset:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+router.post('/login', async (req, res) => {
+  try {
+    const { firebaseToken } = req.body;
+
+    if (!firebaseToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Firebase token required',
+        error: {
+          code: 'MISSING_TOKEN',
+          details: 'No firebaseToken provided in request body'
+        }
+      });
+    }
+
+    // Verify the token
+    let decodedToken;
+    try {
+      decodedToken = await admin.auth().verifyIdToken(firebaseToken);
+    } catch (firebaseError) {
+      console.error('Firebase token verification failed:', firebaseError);
+
+      const errorDetails = {
+        code: firebaseError.code || 'FIREBASE_AUTH_ERROR',
+        message: firebaseError.message,
+        stack: process.env.NODE_ENV === 'development' ? firebaseError.stack : undefined
+      };
+
+      return res.status(401).json({
+        success: false,
+        message: 'Firebase authentication failed',
+        error: errorDetails,
+        suggestions: {
+          'auth/id-token-expired': 'Request a new token from the client',
+          'auth/argument-error': 'Verify the token format is correct',
+          'auth/invalid-id-token': 'Ensure the token is properly encoded'
+        }[firebaseError.code] || 'Please try again or contact support'
+      });
+    }
+
+    // Get user from MySQL
+    let users;
+    try {
+      [users] = await db.promise().query(
+        'SELECT * FROM users WHERE firebase_uid = ?',
+        [decodedToken.uid]
+      );
+    } catch (dbError) {
+      console.error('Database query failed:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database operation failed',
+        error: {
+          code: 'DATABASE_ERROR',
+          details: dbError.message,
+          sqlMessage: dbError.sqlMessage,
+          sqlState: dbError.sqlState
+        }
+      });
+    }
+
+    if (!users.length) {
+      return res.status(403).json({
+        success: false,
+        message: 'User not registered in our system',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: `Firebase UID ${decodedToken.uid} not found in database`,
+          firebaseUid: decodedToken.uid,
+          suggestion: 'Complete the registration process first'
+        }
+      });
+    }
+
+    // Check if user signed in with Google
+    const isGoogleSignIn = decodedToken.firebase &&
+      decodedToken.firebase.sign_in_provider === 'google.com';
+
+    const user = users[0];
+
+    // Prepare the base response
+    const response = {
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        fname: user.fname,
+        lname: user.lname,
+        sector_id: user.sector_id,
+        authProvider: isGoogleSignIn ? 'google' : 'email',
+        hasPassword: !isGoogleSignIn
+      },
+      token: firebaseToken,
+      tokenInfo: {
+        issuedAt: new Date(decodedToken.iat * 1000),
+        expiresAt: new Date(decodedToken.exp * 1000),
+        authTime: decodedToken.auth_time ? new Date(decodedToken.auth_time * 1000) : null,
+        signInProvider: decodedToken.firebase?.sign_in_provider || 'email'
+      }
+    };
+
+    // If user is a farmer, fetch and add farmer details
+    if (user.role === 'farmer') {
+      try {
+        const [farmers] = await db.promise().query(`
+          SELECT 
+            f.id,
+            f.user_id,
+            f.firstname,
+            f.middlename,
+            f.surname,
+            f.extension,
+            f.email,
+            f.phone,
+            f.address,
+            f.imageUrl,
+            f.created_at,
+            f.updated_at,
+            s.sector_name as sector,
+            s.sector_id as sectorId, 
+            f.barangay,
+            f.phone,        
+            f.farm_name as farmName,  
+            f.total_land_area          
+          FROM farmers f
+          LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+          WHERE f.user_id = ?
+        `, [user.id]);
+
+        if (farmers.length) {
+          const farmer = farmers[0];
+          response.farmer = {
+            id: farmer.id,
+            fullName: {
+              firstname: farmer.firstname,
+              middlename: farmer.middlename || null,
+              surname: farmer.surname || null,
+              extension: farmer.extension || null
+            },
+            userId: farmer.user_id,
+            name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
+            email: farmer.email,
+            phone: farmer.phone,
+            address: farmer.address,
+            sector: farmer.sector,
+            sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
+            imageUrl: farmer.imageUrl,
+            barangay: farmer.barangay || null,
+            contact: farmer.phone,
+            farmName: farmer.farmName,
+            hectare: parseFloat(farmer.total_land_area),
+            createdAt: farmer.created_at,
+            updatedAt: farmer.updated_at
+          };
+        }
+      } catch (error) {
+        console.error('Failed to fetch farmer details:', error);
+        // Don't fail the login if farmer details can't be fetched
+        // Just log the error and proceed without farmer details
+      }
+    }
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Unexpected login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during authentication',
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        details: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+ 
+
+
+
+// Password reset endpoint for test accounts
+router.post('/reset-test-account', async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+
+    // Security check - you might want to add additional validation
+    // to ensure this is only used for test accounts in development
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ error: 'This endpoint is disabled in production' });
+    }
+
+    // Get user by email
+    const user = await admin.auth().getUserByEmail(email);
+
+    // Update password
+    await admin.auth().updateUser(user.uid, {
+      password: newPassword
+    });
+
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+
+router.post('/register-farmer', async (req, res) => {
+  let firebaseUser;
+  let mysqlUserInsertResult;
+  let farmerInsertResult;
+
+  try {
+    // 1. Get all data from request
+    const {
+      email,
+      name,
+      sector,
+      firstname,
+      lname,
+      barangay,
+      phone,
+      mname,
+      extension,
+      sex,
+      civilStatus,
+      spouseName,
+      householdHead,
+      householdNum,
+      maleMembers,
+      femaleMembers,
+      motherMaidenName,
+      religion,
+      address,
+      personToNotify,
+      ptnContact,
+      ptnRelationship,
+      password
+    } = req.body;
+
+    // 2. Validate required fields
+    if (!email || !name || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: email, name and password are required',
+      });
+    }
+
+    // 3. Check if email already exists in both users and farmers tables
+    const [existingUsers] = await db.promise().query(
+      'SELECT id FROM users WHERE email = ?',
+      [email]
+    );
+
+    const [existingFarmers] = await db.promise().query(
+      'SELECT id FROM farmers WHERE email = ?',
+      [email]
+    );
+
+    if (existingUsers.length > 0 || existingFarmers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Email already in use',
+      });
+    }
+
+    // 4. Create Firebase user
+    firebaseUser = await admin.auth().createUser({
+      email,
+      password,
+      displayName: name,
+      emailVerified: false,
+    });
+
+
+    function extractSectorId(sectorString) {
+      if (!sectorString) return null;
+      const parts = sectorString.split(':');
+      return parts.length > 0 ? parseInt(parts[0]) : null;
+    }
+
+    // Set custom claims for farmer role
+    await admin.auth().setCustomUserClaims(firebaseUser.uid, { role: 'farmer' });
+
+    // 5. Add to MySQL users table
+    [mysqlUserInsertResult] = await db.promise().query(
+      `INSERT INTO users 
+      (firebase_uid, email, name, fname, lname, role, password) 
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        firebaseUser.uid,
+        email,
+        name,
+        firstname || name.split(' ')[0], // fallback to first part of name
+        lname || name.split(' ').slice(1).join(' ') || null, // fallback to rest of name
+        'farmer',
+        password
+      ]
+    );
+
+    // 6. Create farmer record with all additional data
+    [farmerInsertResult] = await db.promise().query(
+      `INSERT INTO farmers 
+      (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, 
+       sex, civil_status, spouse_name, house_hold_head, household_num, 
+       male_members_num, female_members_num, mother_maiden_name, religion, address, 
+       person_to_notify, ptn_contact, ptn_relationship, sector_id, created_at, updated_at) 
+      VALUES (?, ?, ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        mysqlUserInsertResult.insertId,
+        name,
+        firstname || name.split(' ')[0],
+        mname || null,
+        lname || name.split(' ').slice(1).join(' ') || null,
+        extension || null,
+        email,
+        phone || '---',
+        barangay || null,
+        sex || null,
+        civilStatus || null,
+        spouseName || null,
+        householdHead || null,
+        householdNum || 0,
+        maleMembers || 0,
+        femaleMembers || 0,
+        motherMaidenName || null,
+        religion || null,
+        address || null,
+        personToNotify || null,
+        ptnContact || null,
+        ptnRelationship || null
+        , extractSectorId(sector), // This will extract just the numeric ID
+      ]
+    );
+
+    // 7. Get the complete farmer record with user info
+    const [completeFarmer] = await db.promise().query(
+      `SELECT 
+        f.*,
+        u.firebase_uid,
+        u.role,
+        s.sector_name as sector
+      FROM farmers f
+      JOIN users u ON f.user_id = u.id
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id
+      WHERE f.id = ?`,
+      [farmerInsertResult.insertId]
+    );
+
+    if (completeFarmer.length === 0) {
+      throw new Error('Failed to retrieve created farmer');
+    }
+
+    // 8. Return success response
+    res.status(201).json({
+      success: true,
+      message: 'Farmer registration successful',
+      farmer: {
+        id: completeFarmer[0].id,
+        userId: completeFarmer[0].user_id,
+        firebaseUid: completeFarmer[0].firebase_uid,
+        name: completeFarmer[0].name,
+        email: completeFarmer[0].email,
+        phone: completeFarmer[0].phone,
+        barangay: completeFarmer[0].barangay,
+        sector: completeFarmer[0].sector,
+        role: completeFarmer[0].role,
+        personalInfo: {
+          firstname: completeFarmer[0].firstname,
+          middlename: completeFarmer[0].middlename,
+          surname: completeFarmer[0].surname,
+          extension: completeFarmer[0].extension,
+          sex: completeFarmer[0].sex,
+          civilStatus: completeFarmer[0].civil_status,
+          spouseName: completeFarmer[0].spouse_name
+        },
+        householdInfo: {
+          householdHead: completeFarmer[0].house_hold_head,
+          householdNum: completeFarmer[0].household_num,
+          maleMembers: completeFarmer[0].male_members,
+          femaleMembers: completeFarmer[0].female_members,
+          motherMaidenName: completeFarmer[0].mother_maiden_name,
+          religion: completeFarmer[0].religion
+        },
+        contactInfo: {
+          address: completeFarmer[0].address,
+          personToNotify: completeFarmer[0].person_to_notify,
+          ptnContact: completeFarmer[0].ptn_contact,
+          ptnRelationship: completeFarmer[0].ptn_relationship
+        },
+        createdAt: completeFarmer[0].created_at,
+        updatedAt: completeFarmer[0].updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Farmer registration error:', error);
+
+    // Customize error message based on error type
+    let errorMessage = 'Farmer registration failed';
+    if (error.code === 'auth/email-already-exists') {
+      errorMessage = 'Email already in use (Firebase Auth)';
+    } else if (error.code === 'ER_DUP_ENTRY') {
+      errorMessage = 'Email already in use (database)';
+    }
+
+
+    // Rollback operations in reverse order
+    if (farmerInsertResult?.insertId) {
+      try {
+        await db.promise().query('DELETE FROM farmers WHERE id = ?', [farmerInsertResult.insertId]);
+      } catch (deleteError) {
+        console.error('Failed to rollback farmer entry:', deleteError);
+      }
+    }
+
+    if (mysqlUserInsertResult?.insertId) {
+      try {
+        await db.promise().query('DELETE FROM users WHERE id = ?', [mysqlUserInsertResult.insertId]);
+      } catch (deleteError) {
+        console.error('Failed to rollback MySQL user:', deleteError);
+      }
+    }
+
+    if (firebaseUser?.uid) {
+      try {
+        await admin.auth().deleteUser(firebaseUser.uid);
+      } catch (deleteError) {
+        console.error('Failed to rollback Firebase user:', deleteError);
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+
+
+
+
+
+
+router.put('/users/:id', authenticate, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id, 10);
+
+
+    const { user } = req;
+
+    // Check permissions
+    if (user.dbUser.id !== userId && user.dbUser.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized: You can only update your own profile',
+        error: {
+          code: 'FORBIDDEN',
+          details: 'Insufficient permissions'
+        }
+      });
+    }
+
+    const {
+      fname,
+      lname,
+      email,
+      phone,
+      password,
+      newPassword,
+      role,
+      sector_id
+    } = req.body;
+
+
+
+    try {
+      await admin.auth().getUserByEmail(email);
+      // If no error, email exists
+      return res.status(409).json({
+        success: false,
+        message: 'Email already in use',
+      });
+    } catch (error) {
+      // Only proceed if error code is 'auth/user-not-found'
+      if (error.code !== 'auth/user-not-found') {
+        throw error;
+      }
+    }
+
+    // First get the existing user data
+    const [existingUsers] = await db.promise().query(
+      'SELECT * FROM users WHERE id = ?',
+      [userId]
+    );
+
+    if (!existingUsers.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: `User with ID ${userId} does not exist`
+        }
+      });
+    }
+
+    const existingUser = existingUsers[0];
+    const updates = {};
+    const updateFields = [];
+
+    // Name handling - support both separate fname/lname and combined name
+    if (req.body.name !== undefined) {
+      // Split the name into parts
+      const nameParts = req.body.name.trim().split(/\s+/);
+      updates.fname = nameParts[0] || '';
+      updates.lname = nameParts.slice(1).join(' ') || '';
+      updateFields.push('fname = ?', 'lname = ?');
+    } else {
+      // Handle separate fname/lname if provided
+      if (fname !== undefined) {
+        updates.fname = fname;
+        updateFields.push('fname = ?');
+      }
+      if (lname !== undefined) {
+        updates.lname = lname;
+        updateFields.push('lname = ?');
+      }
+    }
+
+    if (phone !== undefined) {
+      updates.contact = phone;
+      updateFields.push('contact = ?');
+    }
+
+    // Email update requires additional checks
+    if (email !== undefined && email !== existingUser.email) {
+      // Check if new email is already taken
+      const [emailCheck] = await db.promise().query(
+        'SELECT id FROM users WHERE email = ? AND id != ?',
+        [email, userId]
+      );
+
+      if (emailCheck.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already in use by another account',
+          error: {
+            code: 'EMAIL_IN_USE',
+            details: 'The provided email is already registered'
+          }
+        });
+      }
+      updates.email = email;
+      updateFields.push('email = ?');
+    }
+
+    // Role update (admin only)
+    if (role !== undefined) {
+      updates.role = role;
+      updateFields.push('role = ?');
+    }
+
+    // Sector update
+    if (sector_id !== undefined) {
+      updates.sector_id = sector_id;
+      updateFields.push('sector_id = ?');
+    }
+
+    // Password update status tracking
+    let passwordUpdateStatus = {
+      updated: false,
+      message: 'No password change requested',
+      requiresReauthentication: false
+    };
+
+
+
+    if (newPassword) {
+      // Debug object (always included for testing)
+      const passwordDebugInfo = {
+        providedPassword: password,          // What the user sent
+        storedPassword: existingUser.password, // What's stored in DB
+        passwordsMatch: password === existingUser.password,
+        isAdmin: user.dbUser.role === 'admin',
+        userIdMatches: user.dbUser.id === userId,
+        DBuserId: user.dbUser.id,
+        payloaduserId: userId,
+        note: "Admins must provide current password for self-changes"
+      };
+
+      // CASE 1: User is changing THEIR OWN password (ADMIN or NOT)
+      if (user.dbUser.id === userId) {
+        if (!password) {
+          return res.status(400).json({
+            success: false,
+            message: "Current password required",
+            debug: passwordDebugInfo
+          });
+        }
+        if (password !== existingUser.password) {
+          return res.status(401).json({
+            success: false,
+            message: "Current password incorrect",
+            debug: passwordDebugInfo
+          });
+        }
+      }
+      // CASE 2: Admin is changing ANOTHER USER's password (requires admin role)
+      else if (user.dbUser.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: "Admin privileges required to change another user's password",
+          debug: passwordDebugInfo
+        });
+      }
+
+      // If checks pass, update the password
+      updates.password = newPassword;
+      updateFields.push('password = ?');
+
+      // Firebase update (if applicable)
+      await admin.auth().updateUser(user.firebaseUid, { password: newPassword });
+
+      // Response with success + debug
+      passwordUpdateStatus = {
+        updated: true,
+        message: "Password updated successfully",
+        debug: {
+          ...passwordDebugInfo,
+          newPasswordSet: newPassword,
+          warning: "Admins must still verify their own password!"
+        }
+      };
+    }
+
+
+
+
+    // If no updates were requested
+    if (updateFields.length === 0 && !passwordUpdateStatus.updated) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid fields provided for update',
+        error: {
+          code: 'NO_UPDATES',
+          details: 'Request body contained no updatable fields'
+        }
+      });
+    }
+
+    // Execute database updates if there are any
+    if (updateFields.length > 0) {
+      const query = `
+        UPDATE users 
+        SET ${updateFields.join(', ')} 
+        WHERE id = ?
+      `;
+      const values = [...Object.values(updates), userId];
+      await db.promise().query(query, values);
+    }
+
+    // Get the updated user data to return
+    const [updatedUsers] = await db.promise().query(`
+      SELECT 
+        u.id,
+        u.email,
+        u.role,
+        u.created_at,
+        u.fname as firstname,
+        u.lname as surname,
+        u.contact as phone,
+        u.status,
+        s.sector_name as sector,
+        s.sector_id as sectorId
+      FROM users u
+      LEFT JOIN sectors s ON u.sector_id = s.sector_id
+      WHERE u.id = ?
+    `, [userId]);
+
+    const updatedUser = updatedUsers[0];
+
+    // Get Firebase auth details
+    let authProviderInfo = [];
+    try {
+      const firebaseUser = await admin.auth().getUser(user.firebaseUid);
+      authProviderInfo = firebaseUser.providerData.map(provider => ({
+        providerId: provider.providerId,
+        uid: provider.uid,
+        email: provider.email,
+        displayName: provider.displayName
+      }));
+    } catch (error) {
+      console.error('Failed to fetch Firebase user info:', error);
+    }
+
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      user: {
+        id: updatedUser.id,
+        fullName: {
+          firstname: updatedUser.firstname,
+          surname: updatedUser.surname
+        },
+        name: `${updatedUser.firstname}${updatedUser.surname ? ' ' + updatedUser.surname : ''}` || '---',
+        email: updatedUser.email || '---',
+        phone: updatedUser.phone,
+        role: updatedUser.role,
+        status: updatedUser.status || 'Active',
+        sector: updatedUser.sector,
+        sectorId: updatedUser.sectorId || null,
+        createdAt: updatedUser.created_at,
+        authProviders: authProviderInfo,
+        passwordEnabled: authProviderInfo.some(p => p.providerId === 'password')
+      },
+      passwordUpdate: passwordUpdateStatus,
+      security: {
+        lastAuthUpdate: new Date().toISOString(),
+        requiresReauthentication: passwordUpdateStatus.updated
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to update user:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user',
+      error: {
+        code: 'UPDATE_FAILED',
+        details: error.message,
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+      },
+      passwordUpdate: {
+        status: 'error',
+        message: 'Password update failed due to server error'
+      }
+    });
+  }
+});
+
+
+router.get('/sectors', async (req, res) => {
+  try {
+    const { year } = req.query;
+
+    // Base query for sector information
+    const [sectors] = await db.promise().query(`
+      SELECT 
+        s.sector_id,
+        s.sector_name,
+        s.description,
+        s.created_at,
+        s.updated_at
+      FROM sectors s
+      ORDER BY s.sector_name ASC
+    `);
+
+    if (!sectors.length) {
+      return res.json({
+        success: true,
+        sectors: [],
+        totals: {
+          totalLandArea: 0,
+          totalFarmers: 0,
+          totalFarms: 0,
+          totalYields: 0,
+          totalYieldValue: 0
+        }
+      });
+    }
+
+    // Query for farm-based statistics (farmers, farms, land area)
+    const [farmStats] = await db.promise().query(`
+      SELECT 
+        s.sector_id,
+        COUNT(DISTINCT f.farmer_id) as farmer_count,
+        COUNT(DISTINCT f.farm_id) as farm_count,
+        SUM(f.area) as total_area
+      FROM sectors s
+      LEFT JOIN farms f ON s.sector_id = f.sector_id
+      GROUP BY s.sector_id
+    `);
+
+    // Build the yield stats query with optional year filter
+    let yieldStatsQuery = `
+      SELECT 
+        fp.sector_id,
+        COUNT(DISTINCT fy.id) as yield_count,
+        SUM(fy.volume) as total_volume,
+        SUM(fy.Value) as total_value
+      FROM farmer_yield fy
+      JOIN farm_products fp ON fy.product_id = fp.id
+      JOIN sectors s ON fp.sector_id = s.sector_id
+    `;
+
+    if (year) {
+      yieldStatsQuery += ` WHERE YEAR(fy.harvest_date) = ?`;
+    }
+
+    yieldStatsQuery += ` GROUP BY fp.sector_id`;
+
+    // Execute yield stats query with year parameter if provided
+    const [yieldStats] = year
+      ? await db.promise().query(yieldStatsQuery, [year])
+      : await db.promise().query(yieldStatsQuery);
+
+    // Build the totals query with optional year filter
+    let totalsQuery = `
+      SELECT 
+        COUNT(DISTINCT f.farmer_id) as total_farmers,
+        COUNT(DISTINCT f.farm_id) as total_farms,
+        SUM(f.area) as total_land_area,
+        COUNT(DISTINCT fy.id) as total_yields,
+        SUM(fy.volume) as total_yield_volume,
+        SUM(fy.Value) as total_yield_value
+      FROM farms f
+      LEFT JOIN farmer_yield fy ON f.farm_id = fy.farm_id
+    `;
+
+    if (year) {
+      totalsQuery += ` WHERE YEAR(fy.harvest_date) = ?`;
+    }
+
+    // Execute totals query with year parameter if provided
+    const [totals] = year
+      ? await db.promise().query(totalsQuery, [year])
+      : await db.promise().query(totalsQuery);
+
+    // Combine sector info with their stats
+    const processedSectors = sectors.map(sector => {
+      const farmStat = farmStats.find(stat => stat.sector_id === sector.sector_id) || {};
+      const yieldStat = yieldStats.find(stat => stat.sector_id === sector.sector_id) || {};
+
+      return {
+        id: sector.sector_id,
+        name: sector.sector_name,
+        description: sector.description,
+        createdAt: sector.created_at,
+        updatedAt: sector.updated_at,
+        stats: {
+          totalLandArea: farmStat.total_area ? parseFloat(farmStat.total_area) : 0,
+          totalFarmers: farmStat.farmer_count ? parseInt(farmStat.farmer_count) : 0,
+          totalFarms: farmStat.farm_count ? parseInt(farmStat.farm_count) : 0,
+          totalYields: yieldStat.yield_count ? parseInt(yieldStat.yield_count) : 0,
+          totalYieldVolume: yieldStat.total_volume ? parseFloat(yieldStat.total_volume) : 0,
+          totalYieldValue: yieldStat.total_value ? parseFloat(yieldStat.total_value) : 0
+        }
+      };
+    });
+
+    // Prepare totals data
+    const processedTotals = {
+      totalLandArea: totals[0].total_land_area ? parseFloat(totals[0].total_land_area) : 0,
+      totalFarmers: totals[0].total_farmers ? parseInt(totals[0].total_farmers) : 0,
+      totalFarms: totals[0].total_farms ? parseInt(totals[0].total_farms) : 0,
+      totalYields: totals[0].total_yields ? parseInt(totals[0].total_yields) : 0,
+      totalYieldVolume: totals[0].total_yield_volume ? parseFloat(totals[0].total_yield_volume) : 0,
+      totalYieldValue: totals[0].total_yield_value ? parseFloat(totals[0].total_yield_value) : 0
+    };
+
+    res.json({
+      success: true,
+      sectors: processedSectors,
+      totals: processedTotals,
+      ...(year && { yearFilter: year }) // Include the year filter in response if provided
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch sector data:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sector data',
+      error: {
+        code: 'SECTOR_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+router.get('/sectors/:sectorId', async (req, res) => {
+  try {
+    const { sectorId } = req.params;
+    const { year } = req.query;
+
+    // Validate sectorId
+    if (!sectorId || isNaN(sectorId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid sector ID provided'
+      });
+    }
+
+    // Base sector information
+    const [sectorInfo] = await db.promise().query(`
+      SELECT 
+        sector_id,
+        sector_name,
+        description,
+        mission,
+        imgUrl,
+        created_at,
+        updated_at
+      FROM sectors
+      WHERE sector_id = ?
+    `, [sectorId]);
+
+    if (!sectorInfo.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Sector not found'
+      });
+    }
+
+    // Current year stats
+    const [currentStats] = await db.promise().query(`
+      SELECT 
+        COUNT(DISTINCT f.farmer_id) as total_farmers,
+        COUNT(DISTINCT f.farm_id) as total_farms,
+        SUM(f.area) as total_land_area,
+        AVG(f.area) as avg_farm_size,
+        COUNT(DISTINCT fy.id) as total_yields,
+        SUM(fy.volume) as total_yield_volume,
+        SUM(fy.Value) as total_yield_value
+      FROM farms f
+      LEFT JOIN farmer_yield fy ON f.farm_id = fy.farm_id
+      WHERE f.sector_id = ?
+      ${year ? 'AND YEAR(fy.harvest_date) = ?' : ''}
+    `, year ? [sectorId, year] : [sectorId]);
+
+    // Previous year stats for growth calculation
+    let growthMetrics = {};
+    if (year) {
+      const prevYear = parseInt(year) - 1;
+      const [prevYearStats] = await db.promise().query(`
+        SELECT 
+          SUM(fy.volume) as total_yield_volume,
+          SUM(fy.Value) as total_yield_value
+        FROM farms f
+        JOIN farmer_yield fy ON f.farm_id = fy.farm_id
+        WHERE f.sector_id = ? AND YEAR(fy.harvest_date) = ?
+      `, [sectorId, prevYear]);
+
+      if (prevYearStats.length && prevYearStats[0].total_yield_volume) {
+        const currentVol = currentStats[0].total_yield_volume || 0;
+        const prevVol = prevYearStats[0].total_yield_volume;
+        const currentVal = currentStats[0].total_yield_value || 0;
+        const prevVal = prevYearStats[0].total_yield_value;
+
+        growthMetrics = {
+          yieldVolumeGrowth: prevVol ? ((currentVol - prevVol) / prevVol * 100) : 0,
+          yieldValueGrowth: prevVal ? ((currentVal - prevVal) / prevVal * 100) : 0
+        };
+      }
+    }
+
+    // Annual yield data for the last 5 years
+    const [annualYield] = await db.promise().query(`
+      SELECT 
+        YEAR(fy.harvest_date) as year,
+        SUM(fy.volume) as total_volume,
+        SUM(fy.Value) as total_value
+      FROM farms f
+      JOIN farmer_yield fy ON f.farm_id = fy.farm_id
+      WHERE f.sector_id = ?
+      GROUP BY YEAR(fy.harvest_date)
+      ORDER BY year DESC
+      LIMIT 5
+    `, [sectorId]);
+
+    // Prepare response
+    const response = {
+      success: true,
+      sector: {
+        id: sectorInfo[0].sector_id,
+        name: sectorInfo[0].sector_name,
+        description: sectorInfo[0].description,
+        mission: sectorInfo[0].mission,
+        imgUrl: sectorInfo[0].imgUrl,
+        createdAt: sectorInfo[0].created_at,
+        updatedAt: sectorInfo[0].updated_at,
+        stats: {
+          totalFarms: currentStats[0].total_farms ? parseInt(currentStats[0].total_farms) : 0,
+          totalFarmers: currentStats[0].total_farmers ? parseInt(currentStats[0].total_farmers) : 0,
+          totalLandArea: currentStats[0].total_land_area ? parseFloat(currentStats[0].total_land_area) : 0,
+          avgFarmSize: currentStats[0].avg_farm_size ? parseFloat(currentStats[0].avg_farm_size) : 0,
+          totalYields: currentStats[0].total_yields ? parseInt(currentStats[0].total_yields) : 0,
+          totalYieldVolume: currentStats[0].total_yield_volume ? parseFloat(currentStats[0].total_yield_volume) : 0,
+          totalYieldValue: currentStats[0].total_yield_value ? parseFloat(currentStats[0].total_yield_value) : 0,
+          ...growthMetrics
+        },
+        annualYield: annualYield.map(y => ({
+          year: y.year,
+          totalVolume: parseFloat(y.total_volume),
+          totalValue: parseFloat(y.total_value)
+        }))
+      },
+      ...(year && { yearFilter: year })
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error(`Failed to fetch sector details for ID ${req.params.sectorId}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sector details',
+      error: {
+        code: 'SECTOR_DETAILS_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/sector-yield-trends', async (req, res) => {
+  try {
+    // First get all sectors
+    const [sectors] = await db.promise().query(`
+      SELECT sector_id, sector_name FROM sectors
+      ORDER BY sector_name ASC
+    `);
+
+    if (!sectors.length) {
+      return res.json({
+        success: true,
+        sectorData: {}
+      });
+    }
+
+    // Get yield data by year for each sector (main sector aggregates)
+    const [yieldData] = await db.promise().query(`
+      SELECT 
+        p.sector_id,
+        s.sector_name,
+        YEAR(fy.harvest_date) as year,
+        SUM(fy.volume) as total_volume
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE fy.harvest_date IS NOT NULL
+      GROUP BY p.sector_id, s.sector_name, YEAR(fy.harvest_date)
+      ORDER BY s.sector_name, YEAR(fy.harvest_date)
+    `);
+
+    // Get all products with their sector information
+    const [products] = await db.promise().query(`
+      SELECT 
+        p.id as product_id,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name
+      FROM farm_products p
+      JOIN sectors s ON p.sector_id = s.sector_id
+      ORDER BY s.sector_name, p.name
+    `);
+
+    // Get yield data by product (subsectors)
+    const [productYieldData] = await db.promise().query(`
+      SELECT 
+        p.id as product_id,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name,
+        YEAR(fy.harvest_date) as year,
+        SUM(fy.volume) as total_volume
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE fy.harvest_date IS NOT NULL
+      GROUP BY p.id, p.name, p.sector_id, s.sector_name, YEAR(fy.harvest_date)
+      ORDER BY s.sector_name, p.name, YEAR(fy.harvest_date)
+    `);
+
+    // Function to generate random color in Color.fromARGB format
+    const getRandomColor = () => {
+      const r = Math.floor(Math.random() * 256);
+      const g = Math.floor(Math.random() * 256);
+      const b = Math.floor(Math.random() * 256);
+      return `const Color.fromARGB(255, ${r}, ${g}, ${b})`;
+    };
+
+    // Initialize sector data structure
+    const sectorData = {};
+    sectors.forEach(sector => {
+      sectorData[sector.sector_name] = {
+        sectorData: []  // Wrap the array in a sectorData property
+      };
+    });
+
+    // First process main sector aggregates
+    yieldData.forEach(yieldItem => {
+      const sectorName = yieldItem.sector_name;
+
+      // Check if sector aggregate already exists
+      let sectorAggregate = sectorData[sectorName].sectorData.find(s => s.name === sectorName);
+
+      if (!sectorAggregate) {
+        sectorAggregate = {
+          name: sectorName,
+          color: getRandomColor(),
+          data: []
+        };
+        // Add sector aggregate as first item in the sector's array
+        sectorData[sectorName].sectorData.unshift(sectorAggregate);
+      }
+
+      sectorAggregate.data.push({
+        x: yieldItem.year.toString(),
+        y: parseFloat(yieldItem.total_volume) || 0
+      });
+    });
+
+    // Then process individual products
+    productYieldData.forEach(productYield => {
+      const sectorName = productYield.sector_name;
+      const productName = productYield.product_name;
+
+      // Check if this product already exists in the sector data
+      let productSeries = sectorData[sectorName].sectorData.find(s => s.name === productName);
+
+      if (!productSeries) {
+        productSeries = {
+          name: productName,
+          color: getRandomColor(),
+          data: []
+        };
+        sectorData[sectorName].sectorData.push(productSeries);
+      }
+
+      productSeries.data.push({
+        x: productYield.year.toString(),
+        y: parseFloat(productYield.total_volume) || 0
+      });
+    });
+
+    // Sort data points by year for each sector/subsector
+    Object.values(sectorData).forEach(sector => {
+      sector.sectorData.forEach(series => {
+        series.data.sort((a, b) => a.x.localeCompare(b.x));
+      });
+    });
+
+    res.json({
+      success: true,
+      sectorData: sectorData
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch sector yield trends:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sector yield trends',
+      error: {
+        code: 'SECTOR_YIELD_TRENDS_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/shi-values', async (req, res) => {
+  try {
+    const { year, farmerId } = req.query;
+
+    // Helper function to add filters to queries
+    const buildQuery = (baseQuery, dateField, filters = {}) => {
+      let query = baseQuery;
+      const params = [];
+      const conditions = [];
+
+      if (year) {
+        conditions.push(`YEAR(${dateField}) = ?`);
+        params.push(year);
+      }
+
+      if (farmerId) {
+        conditions.push(`farmer_id = ?`);
+        params.push(farmerId);
+      }
+
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      return { query, params };
+    };
+
+    if (farmerId) {
+      // Farmer-specific data
+      const { query: landQuery, params: landParams } = buildQuery(
+        `SELECT 
+          SUM(area) as totalLandArea, 
+          COUNT(farm_id) as numberOfFarms 
+         FROM farms`,
+        'created_at',
+        { farmerId }
+      );
+
+      const { query: productQuery, params: productParams } = buildQuery(
+        `SELECT 
+          COUNT(DISTINCT product_id) as productVariety 
+         FROM farmer_yield`,
+        'harvest_date',
+        { farmerId }
+      );
+
+      const { query: yieldQuery, params: yieldParams } = buildQuery(
+        `SELECT 
+          SUM(volume) as totalYield, 
+          SUM(value) as totalValue 
+         FROM farmer_yield`,
+        'harvest_date',
+        { farmerId }
+      );
+
+      const [landStats] = await db.promise().query(landQuery, landParams);
+      const [productStats] = await db.promise().query(productQuery, productParams);
+      const [yieldStats] = await db.promise().query(yieldQuery, yieldParams);
+
+      res.json({
+        success: true,
+        data: {
+          totalLandArea: landStats[0].totalLandArea ? parseFloat(landStats[0].totalLandArea) : 0,
+          numberOfFarms: landStats[0].numberOfFarms || 0,
+          productVariety: productStats[0].productVariety || 0,
+          totalYield: yieldStats[0].totalYield ? parseFloat(yieldStats[0].totalYield) : 0,
+          totalValue: yieldStats[0].totalValue ? parseFloat(yieldStats[0].totalValue) : 0,
+          year: year || 'all-time',
+          scope: 'farmer'
+        }
+      });
+
+    } else {
+      // System-wide data (admin view)
+      const { query: landQuery, params: landParams } = buildQuery(
+        `SELECT 
+          SUM(area) as totalLandArea, 
+          COUNT(farm_id) as numberOfFarms 
+         FROM farms`,
+        'created_at'
+      );
+
+      const { query: productQuery, params: productParams } = buildQuery(
+        `SELECT 
+          COUNT(DISTINCT product_id) as productVariety 
+         FROM farmer_yield`,
+        'harvest_date'
+      );
+
+      const { query: yieldQuery, params: yieldParams } = buildQuery(
+        `SELECT 
+          SUM(volume) as totalYield, 
+          SUM(value) as totalValue 
+         FROM farmer_yield`,
+        'harvest_date'
+      );
+
+      const { query: activeQuery, params: activeParams } = buildQuery(
+        `SELECT COUNT(DISTINCT farmer_id) as activeFarmers 
+         FROM farmer_yield`,
+        'harvest_date'
+      );
+
+      let inactiveQuery = `
+        SELECT COUNT(DISTINCT f.id) as inactiveFarmers 
+        FROM farmers f
+        LEFT JOIN farmer_yield fy ON f.id = fy.farmer_id 
+      `;
+
+      let inactiveParams = [];
+      if (year) {
+        inactiveQuery += ` WHERE f.id NOT IN (
+          SELECT DISTINCT farmer_id 
+          FROM farmer_yield 
+          WHERE YEAR(harvest_date) = ?
+        )`;
+        inactiveParams.push(year);
+      } else {
+        inactiveQuery += ` WHERE fy.farmer_id IS NULL`;
+      }
+
+      const [landStats] = await db.promise().query(landQuery, landParams);
+      const [productStats] = await db.promise().query(productQuery, productParams);
+      const [yieldStats] = await db.promise().query(yieldQuery, yieldParams);
+      const [activeFarmers] = await db.promise().query(activeQuery, activeParams);
+      const [inactiveStats] = await db.promise().query(inactiveQuery, inactiveParams);
+
+      res.json({
+        success: true,
+        data: {
+          totalLandArea: landStats[0].totalLandArea ? parseFloat(landStats[0].totalLandArea) : 0,
+          numberOfFarms: landStats[0].numberOfFarms || 0,
+          productVariety: productStats[0].productVariety || 0,
+          totalYield: yieldStats[0].totalYield ? parseFloat(yieldStats[0].totalYield) : 0,
+          totalValue: yieldStats[0].totalValue ? parseFloat(yieldStats[0].totalValue) : 0,
+          activeFarmers: activeFarmers[0].activeFarmers || 0,
+          inactiveFarmers: inactiveStats[0].inactiveFarmers || 0,
+          year: year || 'all-time',
+          scope: 'system'
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Failed to fetch SHI values:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch SHI values',
+      error: error.message
+    });
+  }
+});
+
+
+
+
+router.get('/farm-statistics', async (req, res) => {
+  try {
+    const { year } = req.query;
+    const userSectorId = req.user?.dbUser?.sector_id;
+
+    // Helper function to add filters
+    const addFilters = (baseQuery, options = {}) => {
+      let query = baseQuery;
+      const params = [];
+      const conditions = [];
+
+      if (year) {
+        conditions.push(`YEAR(${options.dateField || 'created_at'}) = ?`);
+        params.push(year);
+      }
+
+      if (userSectorId) {
+        conditions.push(`${options.sectorField || 'sector_id'} = ?`);
+        params.push(userSectorId);
+      }
+
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      return { query, params };
+    };
+
+    // 1. Total farms count
+    const farmQuery = addFilters(
+      `SELECT COUNT(DISTINCT farm_id) as totalFarms FROM farms`,
+      { dateField: 'created_at' }
+    );
+    const [totalFarmsResult] = await db.promise().query(farmQuery.query, farmQuery.params);
+
+    // 2. Total farm area (aggregated by farm_id to avoid duplicates)
+    const areaQuery = addFilters(
+      `SELECT farm_id, MAX(area) as area FROM farms GROUP BY farm_id`
+    );
+
+    const [farmAreas] = await db.promise().query(areaQuery.query, areaQuery.params);
+    // Ensure totalArea is a number by parsing each farm.area and providing a default 0
+    const totalArea = farmAreas.reduce((sum, farm) => sum + (parseFloat(farm.area) || 0), 0);
+
+    // 3. Average yield per hectare
+    let yieldQuery = `
+    SELECT 
+      IFNULL(ROUND(SUM(fy.volume) / NULLIF(SUM(f.area), 0), 1), 0) as avgYield
+    FROM farmer_yield fy
+    JOIN farms f ON fy.farm_id = f.farm_id
+  `;
+
+    const yieldConditions = [];
+    const yieldParams = [];
+
+    if (year) {
+      yieldConditions.push(`YEAR(fy.harvest_date) = ?`);
+      yieldParams.push(year);
+    }
+
+    if (userSectorId) {
+      yieldConditions.push(`f.sector_id = ?`);
+      yieldParams.push(userSectorId);
+    }
+
+    if (yieldConditions.length > 0) {
+      yieldQuery += ` WHERE ${yieldConditions.join(' AND ')}`;
+    }
+
+    const [avgYieldResult] = await db.promise().query(yieldQuery, yieldParams);
+
+    // 4. Unique farm owners
+    const ownersQuery = addFilters(
+      `SELECT COUNT(DISTINCT farmer_id) as uniqueOwners FROM farms`,
+      { dateField: 'created_at' }
+    );
+    const [uniqueOwnersResult] = await db.promise().query(ownersQuery.query, ownersQuery.params);
+
+    // Format the response data
+    const responseData = {
+      totalFarms: totalFarmsResult[0]?.totalFarms || 0,
+      totalArea: parseFloat(totalArea.toFixed(2)), // Now totalArea is definitely a number
+      averageYield: avgYieldResult[0]?.avgYield ? `${avgYieldResult[0].avgYield} t/ha` : '0 t/ha',
+      uniqueOwners: uniqueOwnersResult[0]?.uniqueOwners || 0,
+      year: year || 'all-time',
+      sector: userSectorId || 'all-sectors'
+    };
+
+    res.json({
+      success: true,
+      statistics: responseData
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farm statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farm statistics',
+      error: {
+        code: 'FARM_STATS_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/farmers-report', async (req, res) => {
+  try {
+    const { barangay, sector } = req.query; // Changed from sector_id to sector
+
+    // Base query with optional filters
+    let query = `
+      SELECT 
+        f.id,
+        CONCAT(f.firstname, 
+               IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
+               IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
+               IF(f.extension IS NULL, '', CONCAT(' ', f.extension))) as name,
+        f.phone as contact,
+        f.barangay,
+        s.sector_name as sector,
+        s.sector_id,
+        COALESCE(SUM(farm.area), 0) as area,  -- Changed to sum of farm areas
+        GROUP_CONCAT(DISTINCT fp.name SEPARATOR ', ') as products,
+        GROUP_CONCAT(DISTINCT farm.farm_name SEPARATOR ', ') as farms,
+        COALESCE(SUM(fy.volume), 0) as production_value
+      FROM farmers f
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id
+      LEFT JOIN farms farm ON f.id = farm.farmer_id
+      LEFT JOIN farmer_yield fy ON f.id = fy.farmer_id
+      LEFT JOIN farm_products fp ON fy.product_id = fp.id
+    `;
+
+    const conditions = [];
+    const params = [];
+
+    if (barangay && barangay !== 'all') {
+      conditions.push('f.barangay = ?');
+      params.push(barangay);
+    }
+
+    if (sector && sector !== 'all') {
+      // Extract just the number part before the colon
+      const sectorId = sector.split(':')[0];
+      conditions.push('s.sector_id = ?');
+      params.push(sectorId);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    query += ' GROUP BY f.id';
+
+    const [farmers] = await db.promise().query(query, params);
+
+    // Format the response
+    const responseData = farmers.map(farmer => ({
+      'Name': farmer.name,
+      'Contact': farmer.contact,
+      'Barangay': farmer.barangay,
+      'Sector': farmer.sector,
+      'Farms': farmer.farms ? farmer.farms.split(', ') : [],
+      'Products': farmer.products ? farmer.products.split(', ') : [],
+      '(Mt | Heads)': parseFloat(farmer.production_value) || 0,
+      'Area': parseFloat(farmer.area) || 0,
+    }));
+
+    res.json({
+      success: true,
+      filters: {
+        barangay: barangay || 'all',
+        sector: sector || 'all' // Changed from sector_id to sector
+      },
+      count: responseData.length,
+      farmers: responseData
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer summary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer summary',
+      error: {
+        code: 'FARMER_SUMMARY_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+router.get('/barangay-yields-report', async (req, res) => {
+  try {
+    // Extract and clean the IDs
+    const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null;
+    const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
+    const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
+
+    // Other params
+    const { startDate, endDate, viewBy } = req.query;
+
+    // Validate date range
+    const dateRangeValid = startDate && endDate && startDate !== endDate;
+
+    let query;
+    let groupBy = '';
+    let selectFields = `
+      b.name as barangay_name,
+      NULL as product_id,
+      NULL as product_name,
+      NULL as harvest_date,
+      NULL as volume,
+      NULL as Value,
+      NULL as harvest_year,
+      NULL as harvest_month
+    `;
+
+    if (viewBy === 'Monthly') {
+      selectFields = productId ? `
+        b.name as barangay_name,
+        fy.product_id,
+        p.name as product_name,
+        NULL as harvest_date,
+        COALESCE(SUM(fy.volume), 0) as volume,
+        COALESCE(SUM(fy.Value), 0) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month,
+        DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
+        DATE_FORMAT(fy.harvest_date, '%M') as month_name
+      ` : `
+        b.name as barangay_name,
+        NULL as product_id,
+        'All Products' as product_name,
+        NULL as harvest_date,
+        COALESCE(SUM(fy.volume), 0) as volume,
+        COALESCE(SUM(fy.Value), 0) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month,
+        DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
+        DATE_FORMAT(fy.harvest_date, '%M') as month_name
+      `;
+      groupBy = productId ?
+        'GROUP BY b.name, YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id' :
+        'GROUP BY b.name, YEAR(fy.harvest_date), MONTH(fy.harvest_date)';
+    } else if (viewBy === 'Yearly') {
+      selectFields = productId ? `
+        b.name as barangay_name,
+        fy.product_id,
+        p.name as product_name,
+        NULL as harvest_date,
+        COALESCE(SUM(fy.volume), 0) as volume,
+        COALESCE(SUM(fy.Value), 0) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        NULL as harvest_month,
+        YEAR(fy.harvest_date) as year
+      ` : `
+        b.name as barangay_name,
+        NULL as product_id,
+        'All Products' as product_name,
+        NULL as harvest_date,
+        COALESCE(SUM(fy.volume), 0) as volume,
+        COALESCE(SUM(fy.Value), 0) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        NULL as harvest_month,
+        YEAR(fy.harvest_date) as year
+      `;
+      groupBy = productId ?
+        'GROUP BY b.name, YEAR(fy.harvest_date), fy.product_id' :
+        'GROUP BY b.name, YEAR(fy.harvest_date)';
+    } else {
+      // Individual entries
+      selectFields = productId ? `
+        b.name as barangay_name,
+        fy.product_id,
+        p.name as product_name,
+        fy.harvest_date,
+        fy.volume,
+        fy.Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month
+      ` : `
+        b.name as barangay_name,
+        NULL as product_id,
+        'All Products' as product_name,
+        fy.harvest_date,
+        fy.volume,
+        fy.Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month
+      `;
+    }
+
+    const [barangays] = await db.promise().query('SELECT name FROM barangay ORDER BY name');
+
+    query = `
+      SELECT 
+        ${selectFields}
+      FROM barangay b
+      LEFT JOIN farms f ON b.name = f.parentBarangay
+      LEFT JOIN farmer_yield fy ON f.farm_id = fy.farm_id
+      LEFT JOIN farmers fr ON f.farmer_id = fr.id
+      ${productId ? 'LEFT JOIN farm_products p ON fy.product_id = p.id' : ''}
+      WHERE 1=1
+    `;
+
+    const conditions = [];
+    const params = [];
+
+    if (barangayName) {
+      conditions.push('b.name = ?');
+      params.push(barangayName);
+    }
+
+    if (productId) {
+      conditions.push('fy.product_id = ?');
+      params.push(productId);
+    }
+
+    if (sectorId) {
+      conditions.push('fr.sector_id = ?');
+      params.push(sectorId);
+    }
+
+    // Add date range filter if valid
+    if (dateRangeValid) {
+      conditions.push('(fy.harvest_date IS NULL OR fy.harvest_date BETWEEN ? AND ?)');
+      params.push(startDate, endDate);
+    }
+
+    if (conditions.length > 0) {
+      query += ' AND ' + conditions.join(' AND ');
+    }
+
+    query += ` ${groupBy} ORDER BY `;
+
+    // Adjust ordering based on viewBy
+    if (viewBy === 'Monthly') {
+      query += 'month_year DESC, barangay_name' + (productId ? ', product_name' : '');
+    } else if (viewBy === 'Yearly') {
+      query += 'year DESC, barangay_name' + (productId ? ', product_name' : '');
+    } else {
+      query += 'barangay_name, fy.harvest_date DESC';
+    }
+
+    const [yields] = await db.promise().query(query, params);
+
+    // Format response
+    let formattedYields;
+    if (viewBy === 'Monthly') {
+      formattedYields = yields.map(yield => ({
+        barangay: yield.barangay_name,
+        period: yield.month_year,
+        period_display: `${yield.month_name} ${yield.harvest_year}`,
+        product: yield.product_name,
+        volume: parseFloat(yield.volume),
+        total_value: yield.Value ? parseFloat(yield.Value) : 0,
+        year: yield.harvest_year,
+        month: yield.harvest_month,
+        month_name: yield.month_name
+      }));
+    } else if (viewBy === 'Yearly') {
+      formattedYields = yields.map(yield => ({
+        barangay: yield.barangay_name,
+        period: yield.year.toString(),
+        product: yield.product_name,
+        volume: parseFloat(yield.volume),
+        total_value: yield.Value ? parseFloat(yield.Value) : 0,
+        year: yield.harvest_year
+      }));
+    } else {
+      // Individual entries
+      formattedYields = yields.map(yield => ({
+        barangay: yield.barangay_name,
+        product: yield.product_name || null,
+        harvest_date: yield.harvest_date || null,
+        volume: yield.volume ? parseFloat(yield.volume) : 0,
+        value: yield.Value ? parseFloat(yield.Value) : 0
+      }));
+    }
+
+    if (viewBy === 'Monthly' || viewBy === 'Yearly') {
+      const barangayData = {};
+
+      barangays.forEach(barangay => {
+        barangayData[barangay.name] = {
+          barangay: barangay.name,
+          period: viewBy === 'Monthly' ? (formattedYields[0]?.period || '') : (formattedYields[0]?.period || ''),
+          period_display: viewBy === 'Monthly' ? (formattedYields[0]?.period_display || '') : '',
+          product: productId ? (formattedYields[0]?.product || '') : 'All Products',
+          volume: 0,
+          total_value: 0,
+          year: viewBy === 'Monthly' ? (formattedYields[0]?.year || '') : (formattedYields[0]?.year || ''),
+          month: viewBy === 'Monthly' ? (formattedYields[0]?.month || '') : null,
+          month_name: viewBy === 'Monthly' ? (formattedYields[0]?.month_name || '') : null
+        };
+      });
+
+      // Merge with actual data
+      formattedYields.forEach(yield => {
+        barangayData[yield.barangay] = yield;
+      });
+
+      formattedYields = Object.values(barangayData);
+    }
+
+    res.json({
+      success: true,
+      filters: {
+        barangayName: barangayName || 'all',
+        productId: productId || 'all',
+        sectorId: sectorId || 'all',
+        startDate: dateRangeValid ? startDate : 'all',
+        endDate: dateRangeValid ? endDate : 'all',
+        viewBy: viewBy || 'individual'
+      },
+      count: formattedYields.length,
+      yields: formattedYields
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch barangay yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch barangay yields',
+      error: {
+        code: 'BARANGAY_YIELD_FILTER_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+router.get('/sector-yields-report', async (req, res) => {
+  try {
+    // Extract and clean the sector ID
+    const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
+
+    // Other params
+    const { startDate, endDate, viewBy } = req.query;
+
+    // Validate date range
+    const dateRangeValid = startDate && endDate && startDate !== endDate;
+
+    let query;
+    let groupBy = '';
+    let selectFields = `
+      s.sector_id,
+      s.sector_name,
+      NULL as product_id,
+      'All Products' as product_name,
+      NULL as harvest_date,
+      NULL as volume,
+      NULL as Value,
+      NULL as harvest_year,
+      NULL as harvest_month
+    `;
+
+    if (viewBy === 'Monthly') {
+      selectFields = `
+        s.sector_id,
+        s.sector_name,
+        NULL as product_id,
+        'All Products' as product_name,
+        NULL as harvest_date,
+        COALESCE(SUM(fy.volume), 0) as volume,
+        COALESCE(SUM(fy.Value), 0) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month,
+        DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
+        DATE_FORMAT(fy.harvest_date, '%M') as month_name
+      `;
+      groupBy = 'GROUP BY s.sector_id, YEAR(fy.harvest_date), MONTH(fy.harvest_date)';
+    } else if (viewBy === 'Yearly') {
+      selectFields = `
+        s.sector_id,
+        s.sector_name,
+        NULL as product_id,
+        'All Products' as product_name,
+        NULL as harvest_date,
+        COALESCE(SUM(fy.volume), 0) as volume,
+        COALESCE(SUM(fy.Value), 0) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        NULL as harvest_month,
+        YEAR(fy.harvest_date) as year
+      `;
+      groupBy = 'GROUP BY s.sector_id, YEAR(fy.harvest_date)';
+    } else {
+      // Individual entries
+      selectFields = `
+        s.sector_id,
+        s.sector_name,
+        NULL as product_id,
+        'All Products' as product_name,
+        fy.harvest_date,
+        fy.volume,
+        fy.Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month
+      `;
+    }
+
+    const [sectors] = await db.promise().query('SELECT sector_id, sector_name FROM sectors ORDER BY sector_name');
+
+    query = `
+      SELECT 
+        ${selectFields}
+      FROM sectors s
+      LEFT JOIN farmers f ON s.sector_id = f.sector_id
+      LEFT JOIN farms farm ON f.id = farm.farmer_id
+      LEFT JOIN farmer_yield fy ON farm.farm_id = fy.farm_id
+      WHERE 1=1
+    `;
+
+    const conditions = [];
+    const params = [];
+
+    if (sectorId) {
+      conditions.push('s.sector_id = ?');
+      params.push(sectorId);
+    }
+
+    // Add date range filter if valid
+    if (dateRangeValid) {
+      conditions.push('(fy.harvest_date IS NULL OR fy.harvest_date BETWEEN ? AND ?)');
+      params.push(startDate, endDate);
+    }
+
+    if (conditions.length > 0) {
+      query += ' AND ' + conditions.join(' AND ');
+    }
+
+    query += ` ${groupBy} ORDER BY `;
+
+    // Adjust ordering based on viewBy
+    if (viewBy === 'Monthly') {
+      query += 'month_year DESC, sector_name';
+    } else if (viewBy === 'Yearly') {
+      query += 'year DESC, sector_name';
+    } else {
+      query += 'sector_name, fy.harvest_date DESC';
+    }
+
+    const [yields] = await db.promise().query(query, params);
+
+    // Format response
+    let formattedYields;
+    if (viewBy === 'Monthly') {
+      formattedYields = yields.map(yield => ({
+        sector_id: yield.sector_id,
+        sector_name: yield.sector_name,
+        period: yield.month_year,
+        period_display: `${yield.month_name} ${yield.harvest_year}`,
+        product: 'All Products',
+        volume: parseFloat(yield.volume),
+        total_value: yield.Value ? parseFloat(yield.Value) : 0,
+        year: yield.harvest_year,
+        month: yield.harvest_month,
+        month_name: yield.month_name
+      }));
+    } else if (viewBy === 'Yearly') {
+      formattedYields = yields.map(yield => ({
+        sector_id: yield.sector_id,
+        sector_name: yield.sector_name,
+        period: yield.year.toString(),
+        product: 'All Products',
+        volume: parseFloat(yield.volume),
+        total_value: yield.Value ? parseFloat(yield.Value) : 0,
+        year: yield.harvest_year
+      }));
+    } else {
+      // Individual entries
+      formattedYields = yields.map(yield => ({
+        sector_id: yield.sector_id,
+        sector_name: yield.sector_name,
+        product: 'All Products',
+        harvest_date: yield.harvest_date || null,
+        volume: yield.volume ? parseFloat(yield.volume) : 0,
+        value: yield.Value ? parseFloat(yield.Value) : 0
+      }));
+    }
+
+    if (viewBy === 'Monthly' || viewBy === 'Yearly') {
+      const sectorData = {};
+
+      sectors.forEach(sector => {
+        sectorData[sector.sector_id] = {
+          sector_id: sector.sector_id,
+          sector_name: sector.sector_name,
+          period: viewBy === 'Monthly' ? (formattedYields[0]?.period || '') : (formattedYields[0]?.period || ''),
+          period_display: viewBy === 'Monthly' ? (formattedYields[0]?.period_display || '') : '',
+          product: 'All Products',
+          volume: 0,
+          total_value: 0,
+          year: viewBy === 'Monthly' ? (formattedYields[0]?.year || '') : (formattedYields[0]?.year || ''),
+          month: viewBy === 'Monthly' ? (formattedYields[0]?.month || '') : null,
+          month_name: viewBy === 'Monthly' ? (formattedYields[0]?.month_name || '') : null
+        };
+      });
+
+      // Merge with actual data
+      formattedYields.forEach(yield => {
+        sectorData[yield.sector_id] = yield;
+      });
+
+      formattedYields = Object.values(sectorData);
+    }
+
+    res.json({
+      success: true,
+      filters: {
+        sectorId: sectorId || 'all',
+        startDate: dateRangeValid ? startDate : 'all',
+        endDate: dateRangeValid ? endDate : 'all',
+        viewBy: viewBy || 'individual'
+      },
+      count: formattedYields.length,
+      yields: formattedYields
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch sector yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sector yields',
+      error: {
+        code: 'SECTOR_YIELD_FILTER_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+router.get('/farmer-yields-report', async (req, res) => {
+  try {
+    // Extract and clean the IDs
+    const farmerId = req.query.farmerId ? req.query.farmerId.split(':')[0].trim() : null;
+    const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null;
+    const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
+
+    // Other params
+    const { startDate, endDate, viewBy } = req.query;
+
+    // Validate date range
+    const dateRangeValid = startDate && endDate && startDate !== endDate;
+
+    // Base query with optional filters
+    let query = `
+      SELECT 
+        fy.id,
+        farm.farmer_id,
+        CONCAT(f.firstname, 
+               IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
+               IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
+               IF(f.extension IS NULL, '', CONCAT(' ', f.extension))) as farmer_name,
+        b.name as barangay_name,
+        fy.product_id,
+        p.name as product_name,
+        fy.harvest_date,
+        fy.volume,
+        fy.Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month,
+        farm.farm_id
+      FROM farmer_yield fy
+      JOIN farms farm ON fy.farm_id = farm.farm_id
+      JOIN farmers f ON farm.farmer_id = f.id
+      JOIN barangay b ON farm.parentBarangay = b.name
+      LEFT JOIN farm_products p ON fy.product_id = p.id
+    `;
+
+    const conditions = [];
+    const params = [];
+
+    if (farmerId && farmerId !== 'all') {
+      conditions.push('farm.farmer_id = ?');
+      params.push(farmerId);
+    }
+
+    if (barangayName && barangayName !== 'all') {
+      conditions.push('b.name = ?');
+      params.push(barangayName);
+    }
+
+    if (productId && productId !== 'all') {
+      conditions.push('fy.product_id = ?');
+      params.push(productId);
+    }
+
+    if (dateRangeValid) {
+      conditions.push('fy.harvest_date BETWEEN ? AND ?');
+      params.push(startDate, endDate);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    // Handle viewBy options
+    if (viewBy === 'Monthly') {
+      query = `
+        SELECT 
+          NULL as id,
+          farm.farmer_id,
+          CONCAT(f.firstname, 
+                 IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
+                 IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
+                 IF(f.extension IS NULL, '', CONCAT(' ', f.extension))) as farmer_name,
+          b.name as barangay_name,
+          fy.product_id,
+          p.name as product_name,
+          NULL as harvest_date,
+          SUM(fy.volume) as volume,
+          SUM(fy.Value) as Value,
+          YEAR(fy.harvest_date) as harvest_year,
+          MONTH(fy.harvest_date) as harvest_month,
+          DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
+          DATE_FORMAT(fy.harvest_date, '%M') as month_name,
+          LAST_DAY(fy.harvest_date) as period_date
+        FROM farmer_yield fy
+        JOIN farms farm ON fy.farm_id = farm.farm_id
+        JOIN farmers f ON farm.farmer_id = f.id
+        JOIN barangay b ON farm.parentBarangay = b.name
+        LEFT JOIN farm_products p ON fy.product_id = p.id
+        ${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}
+        GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), farm.farmer_id, fy.product_id
+        ORDER BY month_year DESC, farmer_name, product_name
+      `;
+    } else if (viewBy === 'Yearly') {
+      query = `
+        SELECT 
+          NULL as id,
+          farm.farmer_id,
+          CONCAT(f.firstname, 
+                 IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
+                 IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
+                 IF(f.extension IS NULL, '', CONCAT(' ', f.extension))) as farmer_name,
+          b.name as barangay_name,
+          fy.product_id,
+          p.name as product_name,
+          NULL as harvest_date,
+          SUM(fy.volume) as volume,
+          SUM(fy.Value) as Value,
+          YEAR(fy.harvest_date) as harvest_year,
+          NULL as harvest_month,
+          YEAR(fy.harvest_date) as year,
+          MAX(fy.harvest_date) as period_date
+        FROM farmer_yield fy
+        JOIN farms farm ON fy.farm_id = farm.farm_id
+        JOIN farmers f ON farm.farmer_id = f.id
+        JOIN barangay b ON farm.parentBarangay = b.name
+        LEFT JOIN farm_products p ON fy.product_id = p.id
+        ${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}
+        GROUP BY YEAR(fy.harvest_date), farm.farmer_id, fy.product_id
+        ORDER BY year DESC, farmer_name, product_name
+      `;
+    } else {
+      query += ' ORDER BY fy.harvest_date DESC, farmer_name, product_name';
+    }
+
+    const [yields] = await db.promise().query(query, params);
+
+    // Format response
+    const formattedYields = yields.map(yield => {
+      const baseData = {
+        farmer_id: yield.farmer_id,
+        farmer_name: yield.farmer_name,
+        barangay: yield.barangay_name,
+        product: yield.product_name,
+        volume: parseFloat(yield.volume) || 0,
+        total_value: yield.Value ? parseFloat(yield.Value) : null
+      };
+
+      if (viewBy === 'Monthly') {
+        return {
+          ...baseData,
+          period: yield.month_year,
+          period_display: `${yield.month_name} ${yield.harvest_year}`,
+          harvest_date: new Date(yield.period_date).toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long'
+          }),
+          year: yield.harvest_year,
+          month: yield.harvest_month,
+          month_name: yield.month_name
+        };
+      } else if (viewBy === 'Yearly') {
+        return {
+          ...baseData,
+          period: yield.year.toString(),
+          harvest_date: new Date(yield.period_date).toLocaleDateString('en-US', {
+            year: 'numeric'
+          }),
+          year: yield.harvest_year
+        };
+      } else {
+        return {
+          ...baseData,
+          // id: yield.id,
+          harvest_date: new Date(yield.harvest_date).toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          }),
+          // farm_id: yield.farm_id
+        };
+      }
+    });
+
+    res.json({
+      success: true,
+      filters: {
+        farmerId: farmerId || 'all',
+        barangayName: barangayName || 'all',
+        productId: productId || 'all',
+        startDate: dateRangeValid ? startDate : 'all',
+        endDate: dateRangeValid ? endDate : 'all',
+        viewBy: viewBy || 'individual'
+      },
+      count: formattedYields.length,
+      yields: formattedYields
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer yields',
+      error: {
+        code: 'FARMER_YIELD_FILTER_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+
+router.get('/product-yields-report', async (req, res) => {
+  try {
+    // Extract and clean the IDs (keep only the numeric part)
+    const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
+    const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
+
+    // Other params
+    const { startDate, endDate, viewBy } = req.query;
+
+    // Validate date range
+    const dateRangeValid = startDate && endDate && startDate !== endDate;
+
+    let query;
+    let groupBy = '';
+    let selectFields = `
+      fy.id,
+      fy.product_id,
+      p.name as product_name,
+      p.sector_id,
+      s.sector_name,
+      fy.harvest_date,
+      fy.volume,
+      fy.Value,
+      YEAR(fy.harvest_date) as harvest_year,
+      MONTH(fy.harvest_date) as harvest_month
+    `;
+
+    if (viewBy === 'Monthly') {
+      selectFields = `
+        NULL as id,
+        fy.product_id,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name,
+        NULL as harvest_date,
+        SUM(fy.volume) as volume,
+        SUM(fy.Value) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        MONTH(fy.harvest_date) as harvest_month,
+        DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
+        DATE_FORMAT(fy.harvest_date, '%M') as month_name,
+        LAST_DAY(fy.harvest_date) as period_date
+      `;
+      groupBy = 'GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id, p.sector_id';
+    } else if (viewBy === 'Yearly') {
+      selectFields = `
+        NULL as id,
+        fy.product_id,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name,
+        NULL as harvest_date,
+        SUM(fy.volume) as volume,
+        SUM(fy.Value) as Value,
+        YEAR(fy.harvest_date) as harvest_year,
+        NULL as harvest_month,
+        YEAR(fy.harvest_date) as year,
+        MAX(fy.harvest_date) as period_date
+      `;
+      groupBy = 'GROUP BY YEAR(fy.harvest_date), fy.product_id, p.sector_id';
+    }
+
+    query = `
+      SELECT 
+        ${selectFields}
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      LEFT JOIN sectors s ON p.sector_id = s.sector_id  /* Changed to join with product's sector */
+      WHERE 1=1
+    `;
+
+    const conditions = [];
+    const params = [];
+
+    if (productId) {
+      conditions.push('fy.product_id = ?');
+      params.push(productId);
+    }
+
+    if (sectorId) {
+      conditions.push('p.sector_id = ?');  /* Changed to filter by product's sector */
+      params.push(sectorId);
+    }
+
+    // Add date range filter if valid
+    if (dateRangeValid) {
+      conditions.push('fy.harvest_date BETWEEN ? AND ?');
+      params.push(startDate, endDate);
+    }
+
+    if (conditions.length > 0) {
+      query += ' AND ' + conditions.join(' AND ');
+    }
+
+    query += ` ${groupBy} ORDER BY `;
+
+    // Adjust ordering based on viewBy
+    if (viewBy === 'Monthly') {
+      query += 'month_year DESC, product_name, sector_name';
+    } else if (viewBy === 'Yearly') {
+      query += 'year DESC, product_name, sector_name';
+    } else {
+      query += 'fy.harvest_date DESC, product_name, sector_name';
+    }
+
+    const [yields] = await db.promise().query(query, params);
+
+    // Format response with consistent harvest_date field
+    let formattedYields;
+    if (viewBy === 'Monthly') {
+      formattedYields = yields.map(yield => {
+        const harvestDate = new Date(yield.period_date);
+        const formattedDate = harvestDate.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long'
+        });
+
+        return {
+          period: yield.month_year,
+          period_display: `${yield.month_name} ${yield.harvest_year}`,
+          product: yield.product_name,
+          sector: yield.sector_name,
+          volume: parseFloat(yield.volume),
+          total_value: yield.Value ? parseFloat(yield.Value) : null,
+          harvest_date: formattedDate, // Consistent field name
+          year: yield.harvest_year,
+          month: yield.harvest_month,
+          month_name: yield.month_name
+        };
+      });
+    } else if (viewBy === 'Yearly') {
+      formattedYields = yields.map(yield => {
+        const harvestDate = new Date(yield.period_date);
+        const formattedDate = harvestDate.toLocaleDateString('en-US', {
+          year: 'numeric'
+        });
+
+        return {
+          period: yield.year.toString(),
+          product: yield.product_name,
+          sector: yield.sector_name,
+          volume: parseFloat(yield.volume),
+          total_value: yield.Value ? parseFloat(yield.Value) : null,
+          harvest_date: formattedDate, // Consistent field name
+          year: yield.harvest_year
+        };
+      });
+    } else {
+      // Individual entries
+      formattedYields = yields.map(yield => {
+        const harvestDate = new Date(yield.harvest_date);
+        const formattedDate = harvestDate.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        return {
+          product: yield.product_name,
+          sector: yield.sector_name,
+          harvest_date: formattedDate, // Consistent field name
+          volume: parseFloat(yield.volume),
+          value: yield.Value ? parseFloat(yield.Value) : null
+        };
+      });
+    }
+
+    res.json({
+      success: true,
+      filters: {
+        productId: productId || 'all',
+        sectorId: sectorId || 'all',
+        startDate: dateRangeValid ? startDate : 'all',
+        endDate: dateRangeValid ? endDate : 'all',
+        viewBy: viewBy || 'individual'
+      },
+      count: formattedYields.length,
+      yields: formattedYields
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch product yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch product yields',
+      error: {
+        code: 'PRODUCT_YIELD_FILTER_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/yield-distribution', async (req, res) => {
+  try {
+    const { sectorId, year } = req.query;
+
+    // Build the base query
+    let query = `
+      SELECT 
+        s.sector_id,
+        s.sector_name,
+        p.id as product_id,
+        p.name as product_name,
+        COUNT(fy.id) as yield_count,
+        SUM(fy.volume) as total_volume,
+        SUM(fy.Value) as total_value,
+        AVG(fy.volume) as avg_volume,
+        AVG(fy.Value) as avg_value
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      JOIN sectors s ON p.sector_id = s.sector_id
+    `;
+
+    const params = [];
+    const conditions = [];
+
+    // Add sector filter if provided
+    if (sectorId) {
+      if (isNaN(sectorId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid sector ID provided'
+        });
+      }
+      conditions.push('s.sector_id = ?');
+      params.push(sectorId);
+    }
+
+    // Add year filter if provided
+    if (year) {
+      if (isNaN(year) || year.length !== 4) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid year provided (must be 4 digits)'
+        });
+      }
+      conditions.push('YEAR(fy.harvest_date) = ?');
+      params.push(year);
+    }
+
+    // Add WHERE clause if there are conditions
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    // Complete the query
+    query += `
+      GROUP BY s.sector_id, p.id
+      ORDER BY s.sector_name, p.name
+    `;
+
+    const [yieldDistribution] = await db.promise().query(query, params);
+
+    // Organize the data by sector
+    const distributionBySector = {};
+
+    yieldDistribution.forEach(row => {
+      const sectorId = row.sector_id;
+
+      if (!distributionBySector[sectorId]) {
+        distributionBySector[sectorId] = {
+          sectorId: sectorId,
+          sectorName: row.sector_name,
+          totalYields: 0,
+          totalVolume: 0,
+          totalValue: 0,
+          products: []
+        };
+      }
+
+      const productData = {
+        productId: row.product_id,
+        productName: row.product_name,
+        yieldCount: parseInt(row.yield_count),
+        totalVolume: parseFloat(row.total_volume),
+        totalValue: parseFloat(row.total_value),
+        avgVolume: parseFloat(row.avg_volume),
+        avgValue: parseFloat(row.avg_value),
+        percentageOfSectorVolume: 0,
+        percentageOfSectorValue: 0
+      };
+
+      distributionBySector[sectorId].products.push(productData);
+      distributionBySector[sectorId].totalYields += productData.yieldCount;
+      distributionBySector[sectorId].totalVolume += productData.totalVolume;
+      distributionBySector[sectorId].totalValue += productData.totalValue;
+    });
+
+    // Calculate percentages for each product within its sector
+    // Calculate percentages for each product within its sector
+    Object.values(distributionBySector).forEach(sector => {
+      sector.products.forEach(product => {
+        product.percentageOfSectorVolume = sector.totalVolume > 0 ?
+          Math.round((product.totalVolume / sector.totalVolume) * 100 * 100) / 100 : 0; // Round to 2 decimal places
+        product.percentageOfSectorValue = sector.totalValue > 0 ?
+          Math.round((product.totalValue / sector.totalValue) * 100 * 100) / 100 : 0; // Round to 2 decimal places
+      });
+
+      // Sort products by volume (descending)
+      sector.products.sort((a, b) => b.totalVolume - a.totalVolume);
+    });
+
+    // Convert to array and sort by sector name
+    const result = Object.values(distributionBySector).sort((a, b) =>
+      a.sectorName.localeCompare(b.sectorName)
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      ...(sectorId && { sectorFilter: sectorId }),
+      ...(year && { yearFilter: year })
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch yield distribution:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch yield distribution',
+      error: {
+        code: 'YIELD_DISTRIBUTION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+router.get('/farmer-yield-distribution', async (req, res) => {
+  try {
+    const { farmerId, year } = req.query;
+
+    // Validate required parameters
+    if (!farmerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Farmer ID is required'
+      });
+    }
+
+    if (isNaN(farmerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid farmer ID provided'
+      });
+    }
+
+    // Validate year if provided
+    if (year && (isNaN(year) || year.length !== 4)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid year provided (must be 4 digits)'
+      });
+    }
+
+    // Build the query
+    let query = `
+      SELECT 
+        p.id as product_id,
+        p.name as product_name,
+        s.sector_id,
+        s.sector_name,
+        COUNT(fy.id) as yield_count,
+        SUM(fy.volume) as total_volume,
+        SUM(fy.Value) as total_value,
+        AVG(fy.volume) as avg_volume,
+        AVG(fy.Value) as avg_value,
+        MIN(fy.harvest_date) as first_harvest,
+        MAX(fy.harvest_date) as last_harvest
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE fy.farmer_id = ?
+    `;
+
+    const params = [farmerId];
+
+    // Add year filter if provided
+    if (year) {
+      query += ' AND YEAR(fy.harvest_date) = ?';
+      params.push(year);
+    }
+
+    // Complete the query
+    query += `
+      GROUP BY p.id
+      ORDER BY total_volume DESC
+    `;
+
+    const [productDistribution] = await db.promise().query(query, params);
+
+    // Calculate grand totals
+    const grandTotal = {
+      yieldCount: 0,
+      totalVolume: 0,
+      totalValue: 0
+    };
+
+    // Process each product
+    const products = productDistribution.map(row => {
+      const product = {
+        productId: row.product_id,
+        productName: row.product_name,
+        sectorId: row.sector_id,
+        sectorName: row.sector_name,
+        yieldCount: parseInt(row.yield_count),
+        totalVolume: parseFloat(row.total_volume),
+        totalValue: parseFloat(row.total_value),
+        avgVolume: parseFloat(row.avg_volume),
+        avgValue: parseFloat(row.avg_value),
+        firstHarvest: row.first_harvest,
+        lastHarvest: row.last_harvest,
+        percentageOfVolume: 0,
+        percentageOfValue: 0
+      };
+
+      // Update grand totals
+      grandTotal.yieldCount += product.yieldCount;
+      grandTotal.totalVolume += product.totalVolume;
+      grandTotal.totalValue += product.totalValue;
+
+      return product;
+    });
+
+    // Calculate percentages if there are results
+    if (productDistribution.length > 0) {
+      products.forEach(product => {
+        product.percentageOfVolume = grandTotal.totalVolume > 0 ?
+          Math.round((product.totalVolume / grandTotal.totalVolume) * 100 * 100) / 100 : 0;
+        product.percentageOfValue = grandTotal.totalValue > 0 ?
+          Math.round((product.totalValue / grandTotal.totalValue) * 100 * 100) / 100 : 0;
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        farmerId: farmerId,
+        yearFilter: year || 'all years',
+        grandTotal: grandTotal,
+        products: products
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer product distribution:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer product distribution',
+      error: {
+        code: 'FARMER_PRODUCT_DISTRIBUTION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+
+
+
+
+router.get('/farms', async (req, res) => {
+  try {
+    // Get farmerId from query parameters if it exists
+    const { farmerId } = req.query;
+
+    // Base query
+    let farmQuery = `
+      SELECT 
+        f.farm_id,
+        f.vertices,
+        f.farm_name,
+        f.farmer_id,
+        f.products,
+        f.area,
+        f.description,
+        f.sector_id, 
+        f.parentBarangay,
+        s.sector_name,
+        fr.name as farmer_name
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      JOIN farmers fr ON f.farmer_id = fr.id
+    `;
+
+    // Add WHERE clause if farmerId is provided
+    if (farmerId) {
+      farmQuery += ` WHERE f.farmer_id = ${db.escape(farmerId)}`;
+    }
+
+    // Add ordering
+    farmQuery += ` ORDER BY f.farm_name ASC`;
+
+    const [farms] = await db.promise().query(farmQuery);
+
+    // Get all products to create a mapping
+    const [products] = await db.promise().query('SELECT id, name FROM farm_products');
+    const productMap = {};
+    products.forEach(product => {
+      productMap[product.id] = product.name;
+    });
+
+    // Process farms to include product names with IDs
+    const processedFarms = farms.map(farm => {
+      let productEntries = [];
+      try {
+        // Parse the products JSON array if it exists
+        const productIds = JSON.parse(farm.products || '[]');
+        productEntries = productIds.map(id => {
+          const productName = productMap[id];
+          return productName ? `${id}: ${productName}` : null;
+        }).filter(Boolean);
+      } catch (e) {
+        console.error('Error parsing products for farm', farm.farm_id, e);
+      }
+
+      return {
+        id: farm.farm_id,
+        vertices: JSON.parse(farm.vertices || '[]'),
+        name: farm.farm_name,
+        farmerId: farm.farmer_id,
+        owner: `${farm.farmer_id}: ${farm.farmer_name}`,
+        farmerName: farm.farmer_name,
+        products: productEntries,
+        color: getSectorColor(farm.sector_id),
+        area: farm.area ? parseFloat(farm.area) : 0,
+        description: farm.description,
+        sectorId: farm.sector_id,
+        sectorName: farm.sector_name,
+        pinStyle: farm.sector_name,
+        parentBarangay: farm.parentBarangay
+      };
+    });
+
+    res.json({
+      success: true,
+      farms: processedFarms
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farms:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farms',
+      error: {
+        code: 'FARM_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+router.get('/products', authenticate, async (req, res) => {
+  try {
+
+    let query = `
+      SELECT 
+        p.id,
+        p.name,
+        p.description,
+        p.imgUrl,
+        p.created_at,
+        p.updated_at,
+        s.sector_name
+      FROM farm_products p
+      JOIN sectors s ON p.sector_id = s.sector_id
+    `;
+
+    const params = [];
+
+
+
+    query += ' ORDER BY p.created_at DESC';
+
+    const [products] = await db.promise().query(query, params);
+
+    res.json({
+      success: true,
+      products: products.map(product => ({
+        id: product.id,
+        name: product.name,
+        description: product.description,
+        sector: product.sector_name,
+        imageUrl: product.imgUrl, // Make sure this column is correctly named in the DB
+        createdAt: product.created_at,
+        updatedAt: product.updated_at
+      }))
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch products:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch products',
+      error: {
+        code: 'PRODUCT_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+router.get('/yields/:farmerId?', async (req, res) => {
+  try {
+    const { farmerId } = req.params;
+
+    let query = `
+      SELECT 
+        fy.id,
+        fy.farmer_id,
+        fy.product_id,
+        fy.harvest_date,
+        fy.created_at,
+        fy.updated_at,
+        fy.farm_id,
+        fy.volume,
+        fy.notes,
+        fy.Value,
+        fy.images,
+        fy.status,
+        f.barangay,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+         p.imgUrl as productImage,
+        p.sector_id,
+        s.sector_name,
+        farm.area as farm_area,
+        farm.farm_name
+      FROM farmer_yield fy
+      LEFT JOIN farmers f ON fy.farmer_id = f.id
+      LEFT JOIN farm_products p ON fy.product_id = p.id
+      LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+      LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+    `;
+
+    // Add WHERE clause if farmerId is provided
+    if (farmerId) {
+      query += ` WHERE fy.farmer_id = ? `;
+    }
+
+    // Changed from harvest_date to created_at for sorting
+    query += ` ORDER BY fy.updated_at DESC`;
+
+    // Execute query with or without farmerId parameter
+    const [yields] = farmerId
+      ? await db.promise().query(query, [farmerId])
+      : await db.promise().query(query);
+
+    res.json({
+      success: true,
+      yields: yields.map(yieldItem => ({
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productImage: yieldItem.productImage,
+        productName: yieldItem.product_name,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        barangay: yieldItem.barangay,
+        sectorId: yieldItem.sector_id,
+        farmName: yieldItem.farmName,
+        sector: yieldItem.sector_name || 'dummy'
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch yields',
+      error: {
+        code: 'YIELD_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+router.get('/farmers', authenticate, async (req, res) => {
+  try {
+    const [farmers] = await db.promise().query(`
+      SELECT 
+        f.id,
+        f.user_id,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        f.email,
+        f.phone,
+        f.address,
+        f.imageUrl,
+        f.created_at,
+        f.updated_at,
+        s.sector_name as sector,
+        s.sector_id as sectorId, 
+        f.barangay,
+        f.phone,        
+        f.farm_name as farmName,  
+        f.total_land_area          
+      FROM farmers f
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+      ORDER BY f.created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      farmers: farmers.map(farmer => ({
+        id: farmer.id,
+        fullName: {
+          firstname: farmer.firstname,
+          middlename: farmer.middlename || null,
+          surname: farmer.surname || null,
+          extension: farmer.extension || null
+        },
+        userId: farmer.user_id,
+        name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
+        email: farmer.email,
+        phone: farmer.phone,
+        address: farmer.address,
+        sector: farmer.sector,
+        sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
+        imageUrl: farmer.imageUrl,
+        barangay: farmer.barangay || null,
+        contact: farmer.phone,
+        farmName: farmer.farmName,
+        hectare: parseFloat(farmer.total_land_area),
+        createdAt: farmer.created_at,
+        updatedAt: farmer.updated_at
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch farmers:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch farmers' });
+  }
+});
+
+
+
+router.get('/yield-statistics', async (req, res) => {
+  try {
+    const { year, farmerId } = req.query;
+
+    // Improved addFilters function
+    const addFilters = (baseQuery, options = {}) => {
+      let query = baseQuery.trim();
+      const params = [];
+      const conditions = [];
+
+      if (year) {
+        conditions.push(`YEAR(${options.dateField || 'fy.harvest_date'}) = ?`);
+        params.push(year);
+      }
+
+      if (farmerId) {
+        conditions.push(`fy.farmer_id = ?`);
+        params.push(farmerId);
+      }
+
+      if (conditions.length > 0) {
+        const lowerQuery = query.toLowerCase();
+
+        if (lowerQuery.includes('where')) {
+          // Just append the conditions with AND
+          query = query.replace(/(where\s+1\s*=\s*1)/i, `$1 AND ${conditions.join(' AND ')}`);
+          if (!/where\s+1\s*=\s*1/i.test(query)) {
+            query = query.replace(/(where\s+)/i, `$1${conditions.join(' AND ')} AND `);
+          }
+        } else {
+          // Insert WHERE before GROUP BY / ORDER BY / LIMIT if needed
+          const clauses = ['GROUP BY', 'ORDER BY', 'LIMIT'];
+          let insertPos = query.length;
+
+          for (const clause of clauses) {
+            const idx = query.toUpperCase().indexOf(clause);
+            if (idx >= 0 && idx < insertPos) {
+              insertPos = idx;
+            }
+          }
+
+          query = `${query.slice(0, insertPos)} WHERE ${conditions.join(' AND ')} ${query.slice(insertPos)}`;
+        }
+      }
+
+      return { query, params };
+    };
+
+
+    // 1. Total yield
+    const totalYieldQuery = addFilters(`
+      SELECT SUM(fy.volume) as totalYield 
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+    `);
+    const [totalYieldResult] = await db.promise().query(totalYieldQuery.query, totalYieldQuery.params);
+
+    // 2. Average yield per hectare
+    const avgYieldQuery = addFilters(`
+      SELECT 
+        IFNULL(ROUND(SUM(fy.volume) / NULLIF(SUM(farm.area), 0), 2), 0) as avgYieldPerHectare
+      FROM farmer_yield fy
+      JOIN farms farm ON fy.farm_id = farm.farm_id
+      JOIN farm_products p ON fy.product_id = p.id
+    `);
+    const [avgYieldResult] = await db.promise().query(avgYieldQuery.query, avgYieldQuery.params);
+
+    // 3. Top crop yield - using WHERE 1=1 for simpler condition addition
+    const topCropQuery = addFilters(`
+      SELECT 
+        p.name as productName,
+        SUM(fy.volume) as totalVolume
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      WHERE 1=1
+      GROUP BY p.name
+      ORDER BY totalVolume DESC
+      LIMIT 1
+    `);
+    const [topCropResult] = await db.promise().query(topCropQuery.query, topCropQuery.params);
+
+    // 4. This month's yield
+    const currentYear = new Date().getFullYear().toString();
+    const isCurrentYear = year === currentYear || !year;
+
+    const thisMonthQuery = addFilters(`
+      SELECT SUM(fy.volume) as thisMonthYield
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      ${isCurrentYear ? `WHERE fy.harvest_date >= DATE_FORMAT(NOW(), '%Y-%m-01')` : ''}
+    `);
+    const [thisMonthResult] = await db.promise().query(thisMonthQuery.query, thisMonthQuery.params);
+
+    // Format response
+    res.json({
+      success: true,
+      statistics: {
+        totalYield: totalYieldResult[0]?.totalYield || 0,
+        averageYieldPerHectare: avgYieldResult[0]?.avgYieldPerHectare ?
+          `${avgYieldResult[0].avgYieldPerHectare} t/ha` : '0 t/ha',
+        topCrop: topCropResult[0] ? {
+          product: topCropResult[0].productName,
+          volume: topCropResult[0].totalVolume
+        } : null,
+        thisMonthYield: thisMonthResult[0]?.thisMonthYield || 0,
+        year: year || 'all-time',
+        farmer: farmerId || 'all-farmers'
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch yield statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch yield statistics',
+      error: {
+        code: 'YIELD_STATS_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error'
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/farmer-statistics', async (req, res) => {
+  try {
+    const { year } = req.query;
+    const userSectorId = req.user?.dbUser?.sector_id;
+
+    // Helper function to add filters
+    const addFilters = (baseQuery, options = {}) => {
+      let query = baseQuery;
+      const params = [];
+      const conditions = [];
+
+      if (year) {
+        conditions.push(`YEAR(f.${options.dateField || 'created_at'}) = ?`);
+        params.push(year);
+      }
+
+      if (userSectorId) {
+        conditions.push(`f.sector_id = ?`);
+        params.push(userSectorId);
+      }
+
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      return { query, params };
+    };
+
+    // 1. Total farmers count
+    const totalQuery = addFilters(`
+      SELECT COUNT(*) as totalFarmers 
+      FROM farmers f
+    `);
+    const [totalResult] = await db.promise().query(totalQuery.query, totalQuery.params);
+
+    // 2. Active farmers (assuming status field exists)
+    const activeQuery = addFilters(`
+      SELECT COUNT(*) as activeFarmers 
+      FROM farmers f 
+      WHERE f.status = 'active'
+    `);
+    const [activeResult] = await db.promise().query(activeQuery.query, activeQuery.params);
+
+    // 3. Inactive farmers (assuming status field exists)
+    const inactiveQuery = addFilters(`
+      SELECT COUNT(*) as inactiveFarmers 
+      FROM farmers f 
+      WHERE f.status = 'inactive'
+    `);
+    const [inactiveResult] = await db.promise().query(inactiveQuery.query, inactiveQuery.params);
+
+    // 4. Registered farmers (with user account)
+    const registeredQuery = addFilters(`
+      SELECT COUNT(*) as registeredFarmers 
+      FROM farmers f 
+      WHERE f.user_id IS NOT NULL AND f.user_id != 0
+    `);
+    const [registeredResult] = await db.promise().query(registeredQuery.query, registeredQuery.params);
+
+    // 5. New farmers this month (if year is current, otherwise count for selected year)
+    let newFarmersQuery;
+    let newFarmersParams = [];
+
+    if (year && year !== new Date().getFullYear().toString()) {
+      newFarmersQuery = `
+        SELECT COUNT(*) as newFarmers 
+        FROM farmers f
+        WHERE YEAR(f.created_at) = ?
+      `;
+      newFarmersParams = [year];
+
+      if (userSectorId) {
+        newFarmersQuery += ` AND f.sector_id = ?`;
+        newFarmersParams.push(userSectorId);
+      }
+    } else {
+      newFarmersQuery = `
+        SELECT COUNT(*) as newFarmers 
+        FROM farmers f
+        WHERE f.created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      `;
+
+      if (year) {
+        newFarmersQuery += ` AND YEAR(f.created_at) = ?`;
+        newFarmersParams = [year];
+      }
+      if (userSectorId) {
+        newFarmersQuery += year ? ` AND f.sector_id = ?` : ` WHERE f.sector_id = ?`;
+        newFarmersParams.push(userSectorId);
+      }
+    }
+
+    const [newFarmersResult] = await db.promise().query(newFarmersQuery, newFarmersParams);
+
+    // Format the response
+    const responseData = {
+      totalFarmers: totalResult[0]?.totalFarmers || 0,
+      activeFarmers: activeResult[0]?.activeFarmers || 0,
+      inactiveFarmers: inactiveResult[0]?.inactiveFarmers || 0,
+      registeredFarmers: registeredResult[0]?.registeredFarmers || 0,
+      newFarmers: newFarmersResult[0]?.newFarmers || 0,
+      year: year || 'all-time',
+      sector: userSectorId || 'all-sectors'
+    };
+
+    res.json({
+      success: true,
+      statistics: responseData
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer statistics',
+      error: {
+        code: 'FARMER_STATS_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+router.get('/yields/top-contributors', async (req, res) => {
+  try {
+    const [contributors] = await db.promise().query(`
+      SELECT 
+        f.id as farmer_id,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        f.barangay,
+        SUM(fy.volume) as total_volume,
+        COUNT(fy.id) as yield_count,
+        GROUP_CONCAT(DISTINCT s.sector_name SEPARATOR ', ') as sectors
+      FROM farmers f
+      JOIN farmer_yield fy ON f.id = fy.farmer_id
+      JOIN farm_products p ON fy.product_id = p.id
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE fy.volume > 0
+      GROUP BY f.id
+      ORDER BY total_volume DESC
+      LIMIT 6
+    `);
+
+    res.json({
+      success: true,
+      contributors: contributors.map(contributor => ({
+        farmerId: contributor.farmer_id,
+        farmerName: `${contributor.firstname}${contributor.middlename ? ' ' + contributor.middlename : ''}${contributor.surname ? ' ' + contributor.surname : ''}${contributor.extension ? ' ' + contributor.extension : ''}`,
+        totalValue: parseFloat(contributor.total_volume) || 0,
+        yieldCount: contributor.yield_count,
+        barangay: contributor.barangay,
+        sectors: contributor.sectors
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch top contributors:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch top contributors',
+      error: {
+        code: 'TOP_CONTRIBUTORS_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+router.post('/users', authenticate, async (req, res) => {
+  let firebaseUser;
+  let mysqlUserInsertResult;
+  let farmerUpdateResult;
+
+  try {
+    // 1. Verify admin privileges
+    if (req.user.dbUser.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized: Only admin users can create new accounts',
+      });
+    }
+
+    // 2. Get data from request
+    const { email, password, name, role, idToken, phone, barangay, sectorId, imageUrl, farmerId } = req.body;
+
+    // 3. Validate required fields
+    if (!email || !name || !role) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: email, name, and role are required',
+      });
+    }
+
+    // Check if email already exists in database
+    const [existingUsers] = await db.promise().query(
+      'SELECT id FROM users WHERE email = ?',
+      [email]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Email already in use',
+      });
+    }
+
+    // 4. Handle Google account creation
+    if (idToken) {
+      try {
+        // Verify Google ID token
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+
+        // Update existing user or create new one
+        firebaseUser = await admin.auth().updateUser(decodedToken.uid, {
+          email,
+          displayName: name,
+          emailVerified: true,
+        }).catch(async () => {
+          // Create new user if doesn't exist
+          return await admin.auth().createUser({
+            uid: decodedToken.uid,
+            email,
+            displayName: name,
+            emailVerified: true,
+          });
+        });
+
+      } catch (googleError) {
+        console.error('Google user creation failed:', googleError);
+        return res.status(400).json({
+          success: false,
+          message: 'Google authentication failed',
+          error: googleError.message,
+        });
+      }
+    }
+    // 5. Handle email/password account creation
+    else if (password) {
+      try {
+        firebaseUser = await admin.auth().createUser({
+          email,
+          password,
+          displayName: name,
+          emailVerified: false, // Will need email verification
+        });
+      } catch (emailError) {
+        console.error('Email user creation failed:', emailError);
+        return res.status(400).json({
+          success: false,
+          message: 'Email user creation failed',
+          error: emailError.message,
+        });
+      }
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Either password or Google ID token is required',
+      });
+    }
+
+    // 6. Set custom claims for role
+    await admin.auth().setCustomUserClaims(firebaseUser.uid, { role });
+
+    // 7. Add to MySQL users table
+    const nameParts = name.trim().split(/\s+/);
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
+    [mysqlUserInsertResult] = await db.promise().query(
+      `INSERT INTO users 
+      (firebase_uid, email, name, fname, lname, role, sector_id, password) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        firebaseUser.uid,
+        email,
+        name,
+        firstName,
+        lastName,
+        role,
+        sectorId || null,
+        password || null // Store plaintext password (NOT RECOMMENDED)
+      ]
+    );
+
+    // 8. If role is farmer, handle farmer record
+    if (role.toLowerCase() === 'farmer') {
+      if (farmerId) {
+        // Update existing farmer record to link to the new user
+        [farmerUpdateResult] = await db.promise().query(
+          `UPDATE farmers 
+           SET user_id = ?, updated_at = NOW()
+           WHERE id = ?`,
+          [mysqlUserInsertResult.insertId, farmerId]
+        );
+
+        if (farmerUpdateResult.affectedRows === 0) {
+          throw new Error('Farmer not found with the provided farmerId');
+        }
+      } else {
+        // Create new farmer record (existing code)
+        const DEFAULT_IMAGE_URL = 'https://res.cloudinary.com/dk41ykxsq/image/upload/v1745590990/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIzLTAxL3JtNjA5LXNvbGlkaWNvbi13LTAwMi1wLnBuZw-removebg-preview_myrmrf.png';
+        const DEFAULT_PHONE = '---';
+
+        // Parse the full name into components
+        let firstname, middlename, surname, extension;
+
+        if (nameParts.length === 1) {
+          firstname = nameParts[0];
+        } else if (nameParts.length === 2) {
+          [firstname, surname] = nameParts;
+        } else if (nameParts.length === 3) {
+          [firstname, middlename, surname] = nameParts;
+        } else if (nameParts.length >= 4) {
+          // Assuming the last part is extension if it's very short (like Jr., Sr., III)
+          const lastPart = nameParts[nameParts.length - 1];
+          if (lastPart.length <= 4 || ['jr', 'sr', 'ii', 'iii', 'iv'].includes(lastPart.toLowerCase())) {
+            extension = lastPart;
+            surname = nameParts[nameParts.length - 2];
+            middlename = nameParts.slice(1, nameParts.length - 2).join(' ');
+            firstname = nameParts[0];
+          } else {
+            surname = nameParts.pop();
+            middlename = nameParts.slice(1).join(' ');
+            firstname = nameParts[0];
+          }
+        }
+
+        // Insert into farmers table
+        [farmerUpdateResult] = await db.promise().query(
+          `INSERT INTO farmers 
+           (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, sector_id, imageUrl, created_at, updated_at) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+          [
+            mysqlUserInsertResult.insertId, // Link to the users table
+            name,
+            firstname,
+            middlename || null,
+            surname || null,
+            extension || null,
+            email,
+            phone || DEFAULT_PHONE,
+            barangay || null,
+            sectorId || null,
+            DEFAULT_IMAGE_URL
+          ]
+        );
+      }
+    }
+
+    // 9. Return success response
+    const responseData = {
+      success: true,
+      message: 'User account created successfully',
+      user: {
+        firebase_uid: firebaseUser.uid,
+        email,
+        name,
+        role,
+        auth_provider: idToken ? 'google' : 'email',
+      },
+    };
+
+    // If farmer was created/updated, add farmer info to response
+    if (role.toLowerCase() === 'farmer' && (farmerUpdateResult?.insertId || farmerId)) {
+      const farmerRecordId = farmerId || farmerUpdateResult.insertId;
+
+      const [farmerData] = await db.promise().query(
+        `SELECT 
+          f.id,
+          f.name,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          f.email,
+          f.phone,
+          f.barangay,
+          f.imageUrl,
+          f.created_at,
+          f.updated_at,
+          s.sector_name as sector,
+          s.sector_id as sectorId
+        FROM farmers f
+        LEFT JOIN sectors s ON f.sector_id = s.sector_id
+        WHERE f.id = ?`,
+        [farmerRecordId]
+      );
+
+      if (farmerData.length > 0) {
+        responseData.farmer = {
+          id: farmerData[0].id,
+          fullName: {
+            firstname: farmerData[0].firstname,
+            middlename: farmerData[0].middlename || null,
+            surname: farmerData[0].surname || null,
+            extension: farmerData[0].extension || null
+          },
+          name: `${farmerData[0].firstname}${farmerData[0].middlename ? ' ' + farmerData[0].middlename : ''}${farmerData[0].surname ? ' ' + farmerData[0].surname : ''}${farmerData[0].extension ? ' ' + farmerData[0].extension : ''}`,
+          email: farmerData[0].email,
+          phone: farmerData[0].phone,
+          barangay: farmerData[0].barangay,
+          sector: farmerData[0].sector,
+          sectorId: farmerData[0].sectorId ? String(farmerData[0].sectorId) : null,
+          imageUrl: farmerData[0].imageUrl,
+          createdAt: farmerData[0].created_at,
+          updatedAt: farmerData[0].updated_at
+        };
+      }
+    }
+
+    res.status(201).json(responseData);
+
+  } catch (error) {
+    console.error('User creation error:', error);
+
+    // Rollback operations in reverse order
+    if (farmerUpdateResult?.insertId) {
+      try {
+        await db.promise().query('DELETE FROM farmers WHERE id = ?', [farmerUpdateResult.insertId]);
+      } catch (deleteError) {
+        console.error('Failed to rollback farmer entry:', deleteError);
+      }
+    }
+
+    if (mysqlUserInsertResult?.insertId) {
+      try {
+        await db.promise().query('DELETE FROM users WHERE id = ?', [mysqlUserInsertResult.insertId]);
+      } catch (deleteError) {
+        console.error('Failed to rollback MySQL user:', deleteError);
+      }
+    }
+
+    if (firebaseUser?.uid) {
+      try {
+        await admin.auth().deleteUser(firebaseUser.uid);
+      } catch (deleteError) {
+        console.error('Failed to rollback Firebase user:', deleteError);
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during user creation',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+
+// POST create new farmer
+router.post('/farmers', authenticate, async (req, res) => {
+  try {
+    const { name, email, phone, barangay, sectorId, imageUrl } = req.body;
+    const DEFAULT_IMAGE_URL = 'https://res.cloudinary.com/dk41ykxsq/image/upload/v1745590990/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIzLTAxL3JtNjA5LXNvbGlkaWNvbi13LTAwMi1wLnBuZw-removebg-preview_myrmrf.png';
+    const DEFAULT_EMAIL = '---';
+    const DEFAULT_PHONE = '---';
+
+    // Validate required fields - name is now required
+    if (!name) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields',
+        required: ['name']
+      });
+    }
+
+    // Parse the full name into components
+    const nameParts = name.trim().split(/\s+/);
+    let firstname, middlename, surname, extension;
+
+    if (nameParts.length === 1) {
+      firstname = nameParts[0];
+    } else if (nameParts.length === 2) {
+      [firstname, surname] = nameParts;
+    } else if (nameParts.length === 3) {
+      [firstname, middlename, surname] = nameParts;
+    } else if (nameParts.length >= 4) {
+      // Assuming the last part is extension if it's very short (like Jr., Sr., III)
+      const lastPart = nameParts[nameParts.length - 1];
+      if (lastPart.length <= 4 || ['jr', 'sr', 'ii', 'iii', 'iv'].includes(lastPart.toLowerCase())) {
+        extension = lastPart;
+        surname = nameParts[nameParts.length - 2];
+        middlename = nameParts.slice(1, nameParts.length - 2).join(' ');
+        firstname = nameParts[0];
+      } else {
+        surname = nameParts.pop();
+        middlename = nameParts.slice(1).join(' ');
+        firstname = nameParts[0];
+      }
+    }
+
+    // Only check email uniqueness if email is provided and not empty or default
+    if (email && email.trim() !== '' && email.trim() !== DEFAULT_EMAIL) {
+      const [emailCheck] = await db.promise().query(
+        'SELECT id FROM farmers WHERE email = ?',
+        [email]
+      );
+
+      if (emailCheck.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already exists',
+          error: {
+            code: 'EMAIL_EXISTS',
+            details: `Farmer with email ${email} already registered`
+          }
+        });
+      }
+    }
+
+    // Use default values if none provided
+    const farmerImageUrl = imageUrl || DEFAULT_IMAGE_URL;
+    const farmerEmail = email || DEFAULT_EMAIL;
+    const farmerPhone = phone || DEFAULT_PHONE;
+
+    // Insert new farmer - handle empty name parts by setting to NULL
+    const [result] = await db.promise().query(
+      `INSERT INTO farmers 
+       (name , firstname, middlename, surname, extension, email, phone, barangay, sector_id, imageUrl, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        name,
+        firstname,
+        middlename || null,
+        surname || null,
+        extension || null,
+        farmerEmail,
+        farmerPhone,
+        barangay,
+        sectorId,
+        farmerImageUrl
+      ]
+    );
+
+    // Get the newly created farmer with sector name
+    const [newFarmer] = await db.promise().query(
+      `SELECT 
+        f.id,
+        f.name,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        f.email,
+        f.phone,
+        f.address,
+        f.imageUrl,
+        f.created_at,
+        f.updated_at,
+        s.sector_name as sector,
+        s.sector_id as sectorId
+      FROM farmers f
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id
+      WHERE f.id = ?`,
+      [result.insertId]
+    );
+
+    if (newFarmer.length === 0) {
+      throw new Error('Failed to retrieve created farmer');
+    }
+
+    res.status(201).json({
+      success: true,
+      farmer: {
+        id: newFarmer[0].id,
+        fullName: {
+          firstname: newFarmer[0].firstname,
+          middlename: newFarmer[0].middlename || null,
+          surname: newFarmer[0].surname || null,
+          extension: newFarmer[0].extension || null
+        },
+        name: `${newFarmer[0].firstname}${newFarmer[0].middlename ? ' ' + newFarmer[0].middlename : ''}${newFarmer[0].surname ? ' ' + newFarmer[0].surname : ''}${newFarmer[0].extension ? ' ' + newFarmer[0].extension : ''}`,
+        email: newFarmer[0].email,
+        phone: newFarmer[0].phone,
+        address: newFarmer[0].address,
+        barangay: newFarmer[0].barangay,
+        sector: newFarmer[0].sector,
+        sectorId: newFarmer[0].sectorId ? String(newFarmer[0].sectorId) : null,
+        imageUrl: newFarmer[0].imageUrl,
+        createdAt: newFarmer[0].created_at,
+        updatedAt: newFarmer[0].updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to add farmer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add farmer',
+      error: {
+        code: 'FARMER_CREATION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+router.delete('/users/:id', authenticate, async (req, res) => {
+  try {
+    // 1. Verify admin privileges
+    if (req.user.dbUser.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized: Only admin users can delete accounts',
+      });
+    }
+
+    const userId = req.params.id;
+
+    // 2. Get user from MySQL to get Firebase UID and check if it's linked to a farmer
+    const [users] = await db.promise().query(
+      'SELECT firebase_uid, role FROM users WHERE id = ?',
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found in database',
+      });
+    }
+
+    const firebaseUid = users[0].firebase_uid;
+    const userRole = users[0].role;
+
+    // 3. If user is a farmer, find and update the linked farmer record
+    if (userRole.toLowerCase() === 'farmer') {
+      await db.promise().query(
+        'UPDATE farmers SET user_id = 0 WHERE user_id = ?',
+        [userId]
+      );
+    }
+
+    // 4. Delete from Firebase Auth
+    try {
+      await admin.auth().deleteUser(firebaseUid);
+    } catch (firebaseError) {
+      // If Firebase user not found, we might still want to delete the DB record
+      if (firebaseError.code !== 'auth/user-not-found') {
+        throw firebaseError;
+      }
+      console.warn(`Firebase user ${firebaseUid} not found, but proceeding with DB deletion`);
+    }
+
+    // 5. Delete from MySQL
+    await db.promise().query(
+      'DELETE FROM users WHERE id = ?',
+      [userId]
+    );
+
+    // 6. Return success response
+    res.status(200).json({
+      success: true,
+      message: 'User account deleted successfully',
+      deletedUserId: userId,
+      deletedFirebaseUid: firebaseUid,
+    });
+
+  } catch (error) {
+    console.error('User deletion error:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during user deletion',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Helper function to get color based on sector_id
+const getSectorColor = (sectorId) => {
+  switch (parseInt(sectorId)) {
+    case 1: // Rice
+      return 0xFF4CAF50;  
+    case 2: // Corn
+      return 0x7FFFFF00; 
+    case 3: // highvaluecrop
+      return 0xFF9C27B0;  
+    case 4: // livestock
+      return 0xFFFF5722; // Deep orange with 0.5 opacity equivalent
+    case 5: // fishery
+      return 0xFF2196F3; 
+    case 6: // organic
+      return 0xFF9E9E9E; // Grey with 0.5 opacity equivalent
+    default:
+      return 0xFF2196F3; // Default blue color
+  }
+};
+
+// DELETE farm by ID
+router.delete('/farms/:id', async (req, res) => {
+  const farmId = req.params.id;
+
+  if (!farmId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Missing farm ID'
+    });
+  }
+
+  try {
+    // Check if the farm exists
+    const [existingFarm] = await db.promise().query(
+      'SELECT * FROM farms WHERE farm_id = ?',
+      [farmId]
+    );
+
+    if (existingFarm.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farm not found'
+      });
+    }
+
+    // Delete the farm
+    await db.promise().query(
+      'DELETE FROM farms WHERE farm_id = ?',
+      [farmId]
+    );
+
+    res.json({
+      success: true,
+      message: `Farm with ID ${farmId} deleted successfully`
+    });
+  } catch (error) {
+    console.error('Failed to delete farm:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete farm',
+      error: {
+        code: 'FARM_DELETE_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+// POST create new farm
+router.post('/farms/', async (req, res) => {
+  try {
+    const {
+      name,
+      vertices,
+      barangay,
+      sectorId,
+      farmerId,
+      products,
+      description,
+      pinStyle,
+      area
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !vertices) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: name, vertices'
+      });
+    }
+
+    // Convert vertices to the correct format if needed
+    const formattedVertices = Array.isArray(vertices[0])
+      ? vertices.map(([lat, lng]) => ({ lat, lng }))
+      : vertices;
+
+    const insertQuery = `
+      INSERT INTO farms (
+        farm_name,
+        vertices,
+        parentBarangay,
+        sector_id,
+        farmer_id,
+        products,
+        area,
+        description,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `;
+
+    const [result] = await db.promise().query(insertQuery, [
+      name,
+      JSON.stringify(formattedVertices),
+      barangay || 'San Diego',
+      sectorId || 5,
+      farmerId || null,
+      JSON.stringify(products || ["Rice"]),
+      area,
+      description || null
+    ]);
+
+    // Get the newly created farm
+    const [farm] = await db.promise().query(`
+      SELECT 
+        f.*,
+        s.sector_name
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      WHERE f.farm_id = ?
+    `, [result.insertId]);
+
+    if (farm.length === 0) {
+      throw new Error('Failed to retrieve created farm');
+    }
+
+    const createdFarm = farm[0];
+    const parsedVertices = JSON.parse(createdFarm.vertices || '[]');
+
+    res.status(201).json({
+      success: true,
+      farm: {
+        id: createdFarm.farm_id,
+        vertices: parsedVertices,
+        name: createdFarm.farm_name,
+        farmerId: createdFarm.farmer_id,
+        products: JSON.parse(createdFarm.products || '[]'),
+        color: getSectorColor(createdFarm.sector_id),
+        area: createdFarm.area ? parseFloat(createdFarm.area) : 0,
+        description: createdFarm.description,
+        sectorId: createdFarm.sector_id,
+        sectorName: createdFarm.sector_name,
+        pinStyle: pinStyle || createdFarm.sector_name.toLowerCase(),
+        parentBarangay: createdFarm.parentBarangay
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to create farm:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create farm',
+      error: {
+        code: 'FARM_CREATE_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+// PUT update farm
+router.put('/farms/:id', async (req, res) => {
+  try {
+    const farmId = req.params.id;
+    const {
+      name,
+      vertices,
+      barangay,
+      sectorId,
+      owner,  // Changed from farmerId to owner
+      products,
+      description,
+      pinStyle,
+      area
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !vertices || !sectorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: name, vertices,   or sectorId'
+      });
+    }
+
+    // Extract farmerId from owner string (format: "id: name")
+    const farmerId = owner ? parseInt(owner.split(':')[0].trim()) : null;
+
+    // Convert vertices to the correct format if needed
+    const formattedVertices = Array.isArray(vertices[0])
+      ? vertices.map(([lat, lng]) => ({ lat, lng }))
+      : vertices;
+
+    // Convert products to array of numbers (extract IDs from "id: name" strings)
+    const productIds = products
+      ? products.map(product => {
+        if (typeof product === 'string') {
+          return parseInt(product.split(':')[0].trim());
+        }
+        return product; // if it's already a number
+      })
+      : [];
+
+    const updateQuery = `
+      UPDATE farms SET
+        farm_name = ?,
+        vertices = ?,
+        parentBarangay = ?,
+        sector_id = ?,
+        farmer_id = ?,
+        products = ?,
+        area = ?,
+        description = ?,
+        updated_at = NOW()
+      WHERE farm_id = ?
+    `;
+
+    await db.promise().query(updateQuery, [
+      name,
+      JSON.stringify(formattedVertices),
+      barangay,
+      sectorId,
+      farmerId || null,
+      JSON.stringify(productIds), // Store only the IDs
+      area,
+      description || null,
+      farmId
+    ]);
+
+    // Get the updated farm with product names
+    // Modified query to work with MariaDB
+    const [farm] = await db.promise().query(`
+      SELECT 
+        f.*,
+        s.sector_name,
+        (
+          SELECT GROUP_CONCAT(p.name)
+          FROM farm_products p
+          WHERE FIND_IN_SET(p.id, REPLACE(REPLACE(REPLACE(f.products, '[', ''), ']', ''), ' ', ''))
+        ) as product_names
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      WHERE f.farm_id = ?
+    `, [farmId]);
+
+    if (farm.length === 0) {
+      throw new Error('Farm not found');
+    }
+
+    const updatedFarm = farm[0];
+    const parsedVertices = JSON.parse(updatedFarm.vertices || '[]');
+    const productNames = updatedFarm.product_names
+      ? updatedFarm.product_names.split(',')
+      : [];
+
+    res.json({
+      success: true,
+      farm: {
+        id: updatedFarm.farm_id,
+        vertices: parsedVertices,
+        name: updatedFarm.farm_name,
+        farmerId: updatedFarm.farmer_id,
+        products: productNames, // Return only product names
+        color: getSectorColor(updatedFarm.sector_id),
+        area: updatedFarm.area ? parseFloat(updatedFarm.area) : 0,
+        description: updatedFarm.description,
+        sectorId: updatedFarm.sector_id,
+        sectorName: updatedFarm.sector_name,
+        pinStyle: pinStyle || updatedFarm.sector_name.toLowerCase(),
+        parentBarangay: updatedFarm.parentBarangay
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to update farm:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update farm',
+      error: {
+        code: 'FARM_UPDATE_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+// PUT update farm
+router.put('/farmsProfile/:id', async (req, res) => {
+  try {
+    const farmId = req.params.id;
+    const {
+      name,
+      barangay,
+      sectorId,
+      farmerId,  // Changed from farmerId to owner
+      products,
+      description,
+      pinStyle,
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !sectorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: name,    or sectorId'
+      });
+    }
+
+
+
+    // Convert products to array of numbers (extract IDs from "id: name" strings)
+    const productIds = products
+      ? products.map(product => {
+        if (typeof product === 'string') {
+          return parseInt(product.split(':')[0].trim());
+        }
+        return product; // if it's already a number
+      })
+      : [];
+
+    const updateQuery = `
+      UPDATE farms SET
+        farm_name = ?, 
+        parentBarangay = ?,
+        sector_id = ?,
+        farmer_id = ?,
+        products = ?, 
+        description = ?,
+        updated_at = NOW()
+      WHERE farm_id = ?
+    `;
+
+    await db.promise().query(updateQuery, [
+      name,
+      barangay,
+      sectorId,
+      farmerId || null,
+      JSON.stringify(productIds),
+      description || null,
+      farmId
+    ]);
+
+    // Get the updated farm with product names
+    // Modified query to work with MariaDB
+    const [farm] = await db.promise().query(`
+      SELECT 
+        f.*,
+        s.sector_name,
+        (
+          SELECT GROUP_CONCAT(p.name)
+          FROM farm_products p
+          WHERE FIND_IN_SET(p.id, REPLACE(REPLACE(REPLACE(f.products, '[', ''), ']', ''), ' ', ''))
+        ) as product_names
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      WHERE f.farm_id = ?
+    `, [farmId]);
+
+    if (farm.length === 0) {
+      throw new Error('Farm not found');
+    }
+
+    const updatedFarm = farm[0];
+    const productNames = updatedFarm.product_names
+      ? updatedFarm.product_names.split(',')
+      : [];
+
+    res.json({
+      success: true,
+      farm: {
+        id: updatedFarm.farm_id,
+        name: updatedFarm.farm_name,
+        farmerId: updatedFarm.farmer_id,
+        products: productNames, // Return only product names
+        color: getSectorColor(updatedFarm.sector_id),
+        description: updatedFarm.description,
+        sectorId: updatedFarm.sector_id,
+        sectorName: updatedFarm.sector_name,
+        pinStyle: pinStyle || updatedFarm.sector_name.toLowerCase(),
+        parentBarangay: updatedFarm.parentBarangay
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to update farm:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update farm',
+      error: {
+        code: 'FARM_UPDATE_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/farms/:id', async (req, res) => {
+  try {
+    const farmId = req.params.id;
+
+    // First, get the specific farm
+    const farmQuery = `
+      SELECT 
+        f.farm_id,
+        f.vertices,
+        f.farm_name,
+        f.farmer_id,
+        f.products,
+        f.area,
+        f.description,
+        f.sector_id, 
+        f.parentBarangay,
+        s.sector_name,
+        fr.name as farmer_name
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      JOIN farmers fr ON f.farmer_id = fr.id
+      WHERE f.farm_id = ?
+      LIMIT 1
+    `;
+
+    const [farms] = await db.promise().query(farmQuery, [farmId]);
+
+    if (farms.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farm not found'
+      });
+    }
+
+    const farm = farms[0];
+
+    // Get all products to create a mapping
+    const [products] = await db.promise().query('SELECT id, name FROM farm_products');
+    const productMap = {};
+    products.forEach(product => {
+      productMap[product.id] = product.name;
+    });
+
+    // Process the farm to include product names with IDs
+    let productEntries = [];
+    try {
+      // Parse the products JSON array if it exists
+      const productIds = JSON.parse(farm.products || '[]');
+      productEntries = productIds.map(id => {
+        const productName = productMap[id];
+        return productName ? `${id}: ${productName}` : null;
+      }).filter(Boolean);
+    } catch (e) {
+      console.error('Error parsing products for farm', farm.farm_id, e);
+    }
+
+    const processedFarm = {
+      id: farm.farm_id,
+      vertices: JSON.parse(farm.vertices || '[]'),
+      name: farm.farm_name,
+      farmerId: farm.farmer_id,
+      owner: `${farm.farmer_id}: ${farm.farmer_name}`,
+      farmerName: farm.farmer_name,
+      products: productEntries,
+      color: getSectorColor(farm.sector_id),
+      area: farm.area ? parseFloat(farm.area) : 0,
+      description: farm.description,
+      sectorId: farm.sector_id,
+      sectorName: farm.sector_name,
+      pinStyle: farm.sector_name.toLowerCase(),
+      parentBarangay: farm.parentBarangay
+    };
+
+    res.json({
+      success: true,
+      farm: processedFarm
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farm:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farm',
+      error: {
+        code: 'FARM_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+router.get('/farms/by-product/:productId', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId);
+    const currentYear = new Date().getFullYear();
+
+    if (isNaN(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid product ID'
+      });
+    }
+
+    const query = `
+      SELECT 
+        f.farm_id as id,
+        f.farm_name as name,
+        f.parentBarangay ,
+        f.products,
+        f.area,
+        f.description,
+        f.farmer_id,
+        s.sector_name as sector,
+        fr.name as owner
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      JOIN farmers fr ON f.farmer_id = fr.id
+      WHERE JSON_CONTAINS(f.products, ?)
+    `;
+
+    const [farms] = await db.promise().query(query, [JSON.stringify(productId)]);
+
+    // Get product names for mapping
+    const [products] = await db.promise().query('SELECT id, name FROM farm_products');
+    const productMap = {};
+    products.forEach(product => {
+      productMap[product.id] = product.name;
+    });
+
+    // Get yields for current year for each farm
+    const farmIds = farms.map(farm => farm.id);
+    let yearlyYields = {};
+
+    if (farmIds.length > 0) {
+      const [yields] = await db.promise().query(`
+        SELECT farm_id, SUM(volume) as total_volume, SUM(Value) as total_value
+        FROM farmer_yield
+        WHERE product_id = ? 
+          AND farm_id IN (?)
+          AND YEAR(harvest_date) = ?
+        GROUP BY farm_id
+      `, [productId, farmIds, currentYear]);
+
+      yields.forEach(yieldData => {
+        yearlyYields[yieldData.farm_id] = {
+          volume: parseFloat(yieldData.total_volume) || 0
+        };
+      });
+    }
+
+    // Process farms to include product names and yield data
+    const processedFarms = farms.map(farm => {
+      let productEntries = [];
+      try {
+        const productIds = JSON.parse(farm.products || '[]');
+        productEntries = productIds.map(id => {
+          const productName = productMap[id];
+          return productName ? `${id}: ${productName}` : null;
+        }).filter(Boolean);
+      } catch (e) {
+        console.error('Error parsing products for farm', farm.id, e);
+      }
+
+      return {
+        ...farm,
+        farmerId: farm.farmer_id,
+        products: productEntries,
+        area: farm.area ? parseFloat(farm.area) : 0,
+        hectare: farm.area ? (parseFloat(farm.area) / 10000).toFixed(2) : 0,
+        yield: yearlyYields[farm.id] || {
+          volume: 0,
+          value: 0
+        }
+      };
+    });
+
+    res.json({
+      success: true,
+      count: processedFarms.length,
+      farms: processedFarms,
+      currentYear: currentYear
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farms by product:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farms',
+      error: {
+        code: 'FARMS_BY_PRODUCT_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+router.get('/yields/:farmId', async (req, res) => {
+  try {
+    const { farmId } = req.params;
+
+    // First, verify the farm exists
+    const [farmCheck] = await db.promise().query(
+      'SELECT farm_id FROM farms WHERE farm_id = ?',
+      [farmId]
+    );
+
+    if (farmCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farm not found'
+      });
+    }
+
+    // Get yields for the specific farm
+    const [yields] = await db.promise().query(`
+      SELECT 
+        fy.id,
+        fy.farmer_id,
+        fy.product_id,
+        fy.harvest_date,
+        fy.created_at,
+        fy.updated_at,
+        fy.farm_id,
+        fy.volume,
+        fy.notes,
+        fy.Value,
+        fy.images,
+        fy.status,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name,
+        farm.farm_name,
+        farm.area as farm_area
+      FROM farmer_yield fy
+      LEFT JOIN farmers f ON fy.farmer_id = f.id
+      LEFT JOIN farm_products p ON fy.product_id = p.id
+      LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+      LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+      WHERE fy.farm_id = ?
+      ORDER BY fy.harvest_date DESC
+    `, [farmId]);
+
+    res.json({
+      success: true,
+      yields: yields.map(yieldItem => ({
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productName: yieldItem.product_name,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        farmName: yieldItem.farm_name,
+        farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        sectorId: yieldItem.sector_id,
+        sector: yieldItem.sector_name || 'dummy'
+      }))
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farm yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch yields for this farm',
+      error: {
+        code: 'FARM_YIELD_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+// Create a new yield record
+router.post('/yields', async (req, res) => {
+  try {
+    const {
+      farmer_id,
+      product_id,
+      harvest_date,
+      farm_id,
+      volume,
+      notes,
+      value,
+      images,
+      status
+    } = req.body;
+
+    // First, check if the farm already has this product
+    const [farmResult] = await db.promise().query(
+      'SELECT products FROM farms WHERE farm_id = ?',
+      [farm_id]
+    );
+
+    if (farmResult.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farm not found'
+      });
+    }
+
+    const farm = farmResult[0];
+    let farmProducts = [];
+
+    try {
+      farmProducts = JSON.parse(farm.products || '[]');
+    } catch (e) {
+      console.error('Error parsing farm products:', e);
+    }
+
+    // Check if product_id exists in farm's products
+    if (!farmProducts.includes(product_id)) {
+      // Add the product_id to the farm's products
+      farmProducts.push(product_id);
+
+      // Update the farm record
+      await db.promise().query(
+        'UPDATE farms SET products = ? WHERE farm_id = ?',
+        [JSON.stringify(farmProducts), farm_id]
+      );
+    }
+
+    // Proceed with creating the yield record
+    const [result] = await db.promise().query(
+      `INSERT INTO farmer_yield 
+   (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        farmer_id,
+        product_id,
+        harvest_date,
+        farm_id,
+        volume,
+        notes,
+        value,
+        JSON.stringify(images),
+        status || 'Pending'  // This sets 'Pending' as the default if status isn't provided
+      ]
+    );
+
+    // Get the newly created yield record
+    const [yields] = await db.promise().query(
+      `SELECT 
+        fy.*,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name
+       FROM farmer_yield fy
+       LEFT JOIN farmers f ON fy.farmer_id = f.id
+       LEFT JOIN farm_products p ON fy.product_id = p.id
+       LEFT JOIN sectors s ON p.sector_id = s.sector_id
+       WHERE fy.id = ?`,
+      [result.insertId]
+    );
+
+    const yieldItem = yields[0];
+    res.status(201).json({
+      success: true,
+      yield: {
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productName: yieldItem.product_name,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        sectorId: yieldItem.sector_id,
+        sector: yieldItem.sector_name || 'dummy'
+      }
+    });
+  } catch (error) {
+    console.error('Failed to create yield:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create yield',
+      error: error.message
+    });
+  }
+});
+
+
+router.get('/yields/farm/:farmId', async (req, res) => {
+  const { farmId } = req.params;
+
+  try {
+    const [yields] = await db.promise().query(`
+      SELECT 
+        fy.id,
+        fy.farmer_id,
+        fy.product_id,
+        fy.harvest_date,
+        fy.created_at,
+        fy.updated_at,
+        fy.farm_id,
+        fy.volume,
+        fy.notes,
+        fy.Value,
+        fy.images,
+        fy.status,
+        f.barangay,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        p.sector_id,
+        p.imgUrl as product_imgUrl,   
+        s.sector_name,
+        farm.area as farm_area
+      FROM farmer_yield fy
+      LEFT JOIN farmers f ON fy.farmer_id = f.id
+      LEFT JOIN farm_products p ON fy.product_id = p.id
+      LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+      LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+      WHERE fy.farm_id = ?
+      ORDER BY fy.harvest_date DESC
+    `, [farmId]);
+
+    res.json({
+      success: true,
+      yields: yields.map(yieldItem => ({
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productName: yieldItem.product_name,
+        productImage: yieldItem.product_imgUrl,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        barangay: yieldItem.barangay,
+        sectorId: yieldItem.sector_id,
+        sector: yieldItem.sector_name || 'dummy'
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch yields by farm ID:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch yields by farm ID',
+      error: {
+        code: 'YIELD_FETCH_BY_FARM_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+router.get('/yields/product/:productId', async (req, res) => {
+  const { productId } = req.params;
+
+  try {
+    const [yields] = await db.promise().query(`
+      SELECT 
+        fy.id,
+        fy.farmer_id,
+        fy.product_id,
+        fy.harvest_date,
+        fy.created_at,
+        fy.updated_at,
+        fy.farm_id,
+        fy.volume,
+        fy.notes,
+        fy.Value,
+        fy.images,
+        fy.status,
+        f.barangay,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name,
+        farm.area as farm_area
+      FROM farmer_yield fy
+      LEFT JOIN farmers f ON fy.farmer_id = f.id
+      LEFT JOIN farm_products p ON fy.product_id = p.id
+      LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+      LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+      WHERE fy.product_id = ?
+      ORDER BY fy.harvest_date DESC
+    `, [productId]);
+
+    res.json({
+      success: true,
+      yields: yields.map(yieldItem => ({
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productName: yieldItem.product_name,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        barangay: yieldItem.barangay,
+        sectorId: yieldItem.sector_id,
+        sector: yieldItem.sector_name || 'dummy'
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch yields by product ID:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch yields by product ID',
+      error: {
+        code: 'YIELD_FETCH_BY_PRODUCT_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+router.post('/products', authenticate, async (req, res) => {
+  try {
+    const { name, description, sector_id, imageUrl } = req.body;
+    const userId = req.user.dbUser.id; // Assuming you want to track who created the product
+
+    // Validate required fields
+    if (!name || !description || !sector_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields',
+        required: ['name', 'description', 'sector_id']
+      });
+    }
+
+    // Check if sector exists
+    const [sectorCheck] = await db.promise().query(
+      'SELECT sector_id FROM sectors WHERE sector_id = ?',
+      [sector_id]
+    );
+
+    if (sectorCheck.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid sector_id',
+        error: {
+          code: 'INVALID_SECTOR',
+          details: `Sector with ID ${sector_id} not found`
+        }
+      });
+    }
+
+    // Insert new product including optional imageUrl
+    const [result] = await db.promise().query(
+      `INSERT INTO farm_products 
+   (name, description, sector_id, imgUrl, created_at, updated_at) 
+   VALUES (?, ?, ?, ?, NOW(), NOW())`,
+      [name, description, sector_id, imageUrl || null]
+    );
+
+    // Get the newly created product with sector name
+    const [newProduct] = await db.promise().query(
+      `SELECT 
+        p.id,
+        p.name,
+        p.description,
+        p.imgUrl,
+        p.created_at,
+        p.updated_at,
+        s.sector_name
+      FROM farm_products p
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE p.id = ?`,
+      [result.insertId]
+    );
+
+    if (newProduct.length === 0) {
+      throw new Error('Failed to retrieve created product');
+    }
+
+    res.status(201).json({
+      success: true,
+      product: {
+        id: newProduct[0].id,
+        name: newProduct[0].name,
+        description: newProduct[0].description,
+        sector: newProduct[0].sector_name,
+        imageUrl: newProduct[0].imgUrl,
+        createdAt: newProduct[0].created_at,
+        updatedAt: newProduct[0].updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to add product:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add product',
+      error: {
+        code: 'PRODUCT_CREATION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+router.put('/products/:id', authenticate, async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const { name, description, sector_id, imageUrl } = req.body;
+    const userId = req.user.dbUser.id; // Available if you want to track who modified the product
+
+    // Validate required fields
+    if (!name || !description || !sector_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields',
+        required: ['name', 'description', 'sector_id']
+      });
+    }
+
+    // Check if product exists
+    const [productCheck] = await db.promise().query(
+      'SELECT id FROM farm_products WHERE id = ?',
+      [productId]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found',
+        error: {
+          code: 'PRODUCT_NOT_FOUND',
+          details: `Product with ID ${productId} not found`
+        }
+      });
+    }
+
+    // Check if sector exists
+    const [sectorCheck] = await db.promise().query(
+      'SELECT sector_id FROM sectors WHERE sector_id = ?',
+      [sector_id]
+    );
+
+    if (sectorCheck.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid sector_id',
+        error: {
+          code: 'INVALID_SECTOR',
+          details: `Sector with ID ${sector_id} not found`
+        }
+      });
+    }
+
+    // Update the product
+    await db.promise().query(
+      `UPDATE farm_products 
+       SET 
+         name = ?, 
+         description = ?, 
+         sector_id = ?, 
+         imgUrl = ?, 
+         updated_at = NOW()
+       WHERE id = ?`,
+      [name, description, sector_id, imageUrl || null, productId]
+    );
+
+    // Get the updated product with sector name
+    const [updatedProduct] = await db.promise().query(
+      `SELECT 
+        p.id,
+        p.name,
+        p.description,
+        p.imgUrl,
+        p.created_at,
+        p.updated_at,
+        s.sector_name
+      FROM farm_products p
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE p.id = ?`,
+      [productId]
+    );
+
+    if (updatedProduct.length === 0) {
+      throw new Error('Failed to retrieve updated product');
+    }
+
+    res.status(200).json({
+      success: true,
+      product: {
+        id: updatedProduct[0].id,
+        name: updatedProduct[0].name,
+        description: updatedProduct[0].description,
+        sector: updatedProduct[0].sector_name,
+        imageUrl: updatedProduct[0].imgUrl,
+        createdAt: updatedProduct[0].created_at,
+        updatedAt: updatedProduct[0].updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to update product:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update product',
+      error: {
+        code: 'PRODUCT_UPDATE_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+
+
+
+
+router.delete('/products/:id', authenticate, async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const userId = req.user.dbUser.id;
+    const userSectorId = req.user.dbUser.sector_id;
+
+    // First verify the product exists and belongs to the user's sector
+    const [productCheck] = await db.promise().query(
+      `SELECT p.id 
+       FROM farm_products p
+       WHERE p.id = ? 
+       ${userSectorId ? 'AND p.sector_id = ?' : ''}`,
+      userSectorId ? [productId, userSectorId] : [productId]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found or not authorized',
+        error: {
+          code: 'PRODUCT_NOT_FOUND',
+          details: `Product with ID ${productId} not found in your sector`
+        }
+      });
+    }
+
+    // Delete the product
+    await db.promise().query(
+      'DELETE FROM farm_products WHERE id = ?',
+      [productId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Product deleted successfully',
+      deletedId: productId
+    });
+
+  } catch (error) {
+    console.error('Failed to delete product:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete product',
+      error: {
+        code: 'PRODUCT_DELETION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+
+
+router.get('/yields/:id', async (req, res) => {
+  try {
+    const [yields] = await db.promise().query(
+      `SELECT 
+        fy.*,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name
+       FROM farmer_yield fy
+       LEFT JOIN farmers f ON fy.farmer_id = f.id
+       LEFT JOIN farm_products p ON fy.product_id = p.id
+       LEFT JOIN sectors s ON p.sector_id = s.sector_id
+       WHERE fy.id = ?`,
+      [req.params.id]
+    );
+
+    if (yields.length === 0) {
+      return res.status(404).json({ success: false, message: 'Yield not found' });
+    }
+
+    const yieldItem = yields[0];
+    res.json({
+      success: true,
+      yield: {
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productName: yieldItem.product_name,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        sectorId: yieldItem.sector_id,
+        sector: yieldItem.sector_name || 'dummy'
+      }
+    });
+  } catch (error) {
+    console.error('Failed to fetch yield:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch yield' });
+  }
+});
+
+// Update a yield record
+router.put('/yields/:id', async (req, res) => {
+  try {
+    const {
+      farmer_id,
+      product_id,
+      harvest_date,
+      farm_id,
+      volume,
+      notes,
+      value,
+      images,
+      status
+    } = req.body;
+
+    await db.promise().query(
+      `UPDATE farmer_yield 
+       SET 
+         farmer_id = ?, 
+         product_id = ?, 
+         harvest_date = ?, 
+         farm_id = ?, 
+         volume = ?, 
+         notes = ?, 
+         Value = ?, 
+         images = ?, 
+         status = ?,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        farmer_id,
+        product_id,
+        harvest_date,
+        farm_id,
+        volume,
+        notes,
+        value,
+        JSON.stringify(images),
+        status,
+        req.params.id
+      ]
+    );
+
+    // Get the updated yield record
+    const [yields] = await db.promise().query(
+      `SELECT 
+        fy.*,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        p.sector_id,
+        s.sector_name
+       FROM farmer_yield fy
+       LEFT JOIN farmers f ON fy.farmer_id = f.id
+       LEFT JOIN farm_products p ON fy.product_id = p.id
+       LEFT JOIN sectors s ON p.sector_id = s.sector_id
+       WHERE fy.id = ?`,
+      [req.params.id]
+    );
+
+    if (yields.length === 0) {
+      return res.status(404).json({ success: false, message: 'Yield not found' });
+    }
+
+    const yieldItem = yields[0];
+    res.json({
+      success: true,
+      yield: {
+        id: yieldItem.id,
+        farmerId: yieldItem.farmer_id,
+        farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        productId: yieldItem.product_id,
+        productName: yieldItem.product_name,
+        harvestDate: yieldItem.harvest_date,
+        createdAt: yieldItem.created_at,
+        updatedAt: yieldItem.updated_at,
+        farmId: yieldItem.farm_id,
+        volume: parseFloat(yieldItem.volume),
+        notes: yieldItem.notes || null,
+        value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+        images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+        status: yieldItem.status || null,
+        sectorId: yieldItem.sector_id,
+        sector: yieldItem.sector_name || 'dummy'
+      }
+    });
+  } catch (error) {
+    console.error('Failed to update yield:', error);
+    res.status(500).json({ success: false, message: 'Failed to update yield' });
+  }
+});
+
+// Delete a yield record
+router.delete('/yields/:id', async (req, res) => {
+  try {
+    const [result] = await db.promise().query(
+      'DELETE FROM farmer_yield WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Yield not found' });
+    }
+
+    res.json({ success: true, message: 'Yield deleted successfully' });
+  } catch (error) {
+    console.error('Failed to delete yield:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete yield' });
+  }
+});
+
+
+
+
+
+
+
+// GET a specific farmer by ID
+router.get('/farmers/:id', authenticate, async (req, res) => {
+  try {
+    const farmerId = req.params.id;
+
+    // Validate farmer ID
+    if (!farmerId || isNaN(farmerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid farmer ID'
+      });
+    }
+
+    const [farmers] = await db.promise().query(`
+      SELECT 
+        f.*,
+        s.sector_name as sector,
+        s.sector_id as sectorId
+      FROM farmers f
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+      WHERE f.id = ?
+    `, [farmerId]);
+
+    if (farmers.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farmer not found'
+      });
+    }
+
+    const farmer = farmers[0];
+
+    res.json({
+      success: true,
+      farmer: {
+        id: farmer.id,
+        firstname: farmer.firstname,
+        middlename: farmer.middlename || null,
+        surname: farmer.surname || null,
+        extension: farmer.extension || null,
+        name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
+        email: farmer.email,
+        phone: farmer.phone,
+        sex: farmer.sex,
+        address: farmer.address,
+        sector: farmer.sector,
+        sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
+        imageUrl: farmer.imageUrl,
+        barangay: farmer.barangay || null,
+        contact: farmer.phone,
+        farmName: farmer.farm_name,
+        hectare: parseFloat(farmer.total_land_area) || 0,
+        createdAt: farmer.created_at,
+        updatedAt: farmer.updated_at,
+        house_hold_head: farmer.house_hold_head,
+        civil_status: farmer.civil_status || null,
+        spouse_name: farmer.spouse_name || null,
+        religion: farmer.religion || null,
+        household_num: farmer.household_num,
+        male_members_num: farmer.male_members_num || null,
+        female_members_num: farmer.female_members_num || null,
+        mother_maiden_name: farmer.mother_maiden_name || null,
+        person_to_notify: farmer.person_to_notify || null,
+        ptn_contact: farmer.ptn_contact || null,
+        ptn_relationship: farmer.ptn_relationship || null
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer',
+      error: {
+        code: 'FARMER_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+// PUT update farmer
+router.put('/farmers/:id', authenticate, async (req, res) => {
+  try {
+    const farmerId = req.params.id;
+    const {
+      firstname,
+      middlename,
+      surname,
+      extension,
+      email,
+      phone,
+      address,
+      barangay,
+      sectorId,
+      imageUrl,
+      farm_name,
+      total_land_area,
+      sex, // Added missing sex field
+      house_hold_head,
+      civil_status,
+      spouse_name,
+      religion,
+      household_num,
+      male_members_num,
+      female_members_num,
+      mother_maiden_name,
+      person_to_notify,
+      ptn_contact,
+      ptn_relationship
+    } = req.body;
+
+    // Validate required fields
+    if (!firstname || !email || !phone || !barangay || !sectorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields',
+        required: ['firstname', 'email', 'phone', 'barangay', 'sectorId']
+      });
+    }
+
+    // Check if farmer exists
+    const [farmerCheck] = await db.promise().query(
+      'SELECT id FROM farmers WHERE id = ?',
+      [farmerId]
+    );
+
+    if (farmerCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farmer not found',
+        error: {
+          code: 'FARMER_NOT_FOUND',
+          details: `Farmer with ID ${farmerId} not found`
+        }
+      });
+    }
+
+    // Check if email is being used by another farmer
+    const [emailCheck] = await db.promise().query(
+      'SELECT id FROM farmers WHERE email = ? AND id != ?',
+      [email, farmerId]
+    );
+
+    if (emailCheck.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already in use by another farmer',
+        error: {
+          code: 'EMAIL_IN_USE',
+          details: `Email ${email} is already registered to another farmer`
+        }
+      });
+    }
+
+    // Construct full name
+    const name = `${firstname}${middlename ? ' ' + middlename : ''}${surname ? ' ' + surname : ''}${extension ? ' ' + extension : ''}`;
+
+    // Update farmer
+    await db.promise().query(
+      `UPDATE farmers SET 
+        name = ?,
+        firstname = ?,
+        middlename = ?,
+        surname = ?,
+        extension = ?,
+        email = ?,
+        sex = ?,
+        phone = ?,
+        address = ?,
+        barangay = ?,
+        sector_id = ?,
+        imageUrl = ?,
+        farm_name = ?,
+        total_land_area = ?,
+        house_hold_head = ?,
+        civil_status = ?,
+        spouse_name = ?,
+        religion = ?,
+        household_num = ?,
+        male_members_num = ?,
+        female_members_num = ?,
+        mother_maiden_name = ?,
+        person_to_notify = ?,
+        ptn_contact = ?,
+        ptn_relationship = ?,
+        updated_at = NOW()
+      WHERE id = ?`,
+      [
+        name,
+        firstname,
+        middlename || null,
+        surname || null,
+        extension || null,
+        email,
+        sex || null,
+        phone,
+        address || null,
+        barangay,
+        sectorId,
+        imageUrl || null,
+        farm_name || null,
+        total_land_area || null,
+        house_hold_head || null,
+        civil_status || null,
+        spouse_name || null,
+        religion || null,
+        household_num || null,
+        male_members_num || null,
+        female_members_num || null,
+        mother_maiden_name || null,
+        person_to_notify || null,
+        ptn_contact || null,
+        ptn_relationship || null,
+        farmerId
+      ]
+    );
+
+    // Get the updated farmer with sector name
+    const [updatedFarmer] = await db.promise().query(
+      `SELECT 
+        f.*,
+        s.sector_name as sector,
+        s.sector_id as sectorId
+      FROM farmers f
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+      WHERE f.id = ?`,
+      [farmerId]
+    );
+
+    const farmer = updatedFarmer[0];
+
+    res.json({
+      success: true,
+      farmer: {
+        id: farmer.id,
+        firstname: farmer.firstname,
+        middlename: farmer.middlename || null,
+        surname: farmer.surname || null,
+        sex: farmer.sex || null, // Added sex to response
+        extension: farmer.extension || null,
+        name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
+        email: farmer.email,
+        phone: farmer.phone,
+        address: farmer.address,
+        sector: farmer.sector,
+        sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
+        imageUrl: farmer.imageUrl,
+        barangay: farmer.barangay || null,
+        contact: farmer.phone,
+        farmName: farmer.farm_name,
+        hectare: parseFloat(farmer.total_land_area) || 0,
+        created_at: farmer.created_at,
+        updated_at: farmer.updated_at,
+        house_hold_head: farmer.house_hold_head,
+        civil_status: farmer.civil_status || null,
+        spouse_name: farmer.spouse_name || null,
+        religion: farmer.religion || null,
+        household_num: farmer.household_num || null,
+        male_members_num: farmer.male_members_num || null,
+        female_members_num: farmer.female_members_num || null,
+        mother_maiden_name: farmer.mother_maiden_name || null,
+        person_to_notify: farmer.person_to_notify || null,
+        ptn_contact: farmer.ptn_contact || null,
+        ptn_relationship: farmer.ptn_relationship || null
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to update farmer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update farmer',
+      error: {
+        code: 'FARMER_UPDATE_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+// DELETE farmer
+router.delete('/farmers/:id', authenticate, async (req, res) => {
+  try {
+    const farmerId = req.params.id;
+
+    // Check if farmer exists
+    const [farmerCheck] = await db.promise().query(
+      'SELECT id FROM farmers WHERE id = ?',
+      [farmerId]
+    );
+
+    if (farmerCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farmer not found',
+        error: {
+          code: 'FARMER_NOT_FOUND',
+          details: `Farmer with ID ${farmerId} not found`
+        }
+      });
+    }
+
+    // Delete the farmer
+    await db.promise().query(
+      'DELETE FROM farmers WHERE id = ?',
+      [farmerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Farmer deleted successfully',
+      deletedId: farmerId
+    });
+
+  } catch (error) {
+    console.error('Failed to delete farmer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete farmer',
+      error: {
+        code: 'FARMER_DELETION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+router.get('/users', authenticate, async (req, res) => {
+  try {
+    const [users] = await db.promise().query(`
+      SELECT 
+        u.id,
+        u.email,
+        u.role,
+        u.created_at,
+        u.fname as firstname,
+        u.lname as surname,
+        u.contact as phone,
+        u.status,
+        s.sector_name as sector,
+        s.sector_id as sectorId
+      FROM users u
+      LEFT JOIN sectors s ON u.sector_id = s.sector_id 
+      ORDER BY u.created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      users: users.map(user => ({
+        id: user.id,
+        fullName: {
+          firstname: user.firstname,
+          surname: user.surname
+        },
+        name: `${user.firstname}${user.surname ? ' ' + user.surname : ''}` || '---',
+        email: user.email || '---',
+        phone: user.phone,
+        role: user.role,
+        status: user.status || 'Active',
+        sector: user.sector,
+        sectorId: user.sectorId || null,
+        createdAt: user.created_at
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch users:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+  }
+});
+
+router.get('/user-statistics', async (req, res) => {
+  try {
+    const { year } = req.query;
+
+    // Helper function to add year filter
+    const addYearFilter = (baseQuery, options = {}) => {
+      let query = baseQuery;
+      const params = [];
+
+      if (year) {
+        query += ` WHERE YEAR(${options.dateField || 'created_at'}) = ?`;
+        params.push(year);
+      }
+
+      return { query, params };
+    };
+
+    // 1. Total users count
+    const totalUsersQuery = addYearFilter(
+      `SELECT COUNT(*) as totalUsers FROM users`
+    );
+    const [totalUsersResult] = await db.promise().query(totalUsersQuery.query, totalUsersQuery.params);
+
+    // 2. Users by role
+    const rolesQuery = addYearFilter(
+      `SELECT role, COUNT(*) as count FROM users GROUP BY role`
+    );
+    const [rolesResult] = await db.promise().query(rolesQuery.query, rolesQuery.params);
+
+    // Format roles data
+    const roles = rolesResult.reduce((acc, row) => {
+      acc[row.role] = row.count;
+      return acc;
+    }, {});
+
+    // 3. New users this month (if year is current, otherwise count for the selected year)
+    let newUsersQuery;
+    let newUsersParams = [];
+
+    if (year && year !== new Date().getFullYear().toString()) {
+      // If filtering by a past year, count all users from that year
+      newUsersQuery = `SELECT COUNT(*) as newUsers FROM users WHERE YEAR(created_at) = ?`;
+      newUsersParams = [year];
+    } else {
+      // If no year filter or current year, count users from the last 30 days
+      newUsersQuery = `SELECT COUNT(*) as newUsers FROM users WHERE created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`;
+
+      if (year) {
+        // If current year is selected, ensure we're still within the year
+        newUsersQuery += ` AND YEAR(created_at) = ?`;
+        newUsersParams = [year];
+      }
+    }
+
+    const [newUsersResult] = await db.promise().query(newUsersQuery, newUsersParams);
+
+    // 4. Active users today (placeholder - would need login tracking)
+    const activeToday = 0;
+
+    // Format the response data
+    const responseData = {
+      totalUsers: totalUsersResult[0]?.totalUsers || 0,
+      activeToday, // Currently not implemented
+      roles,
+      newUsers: newUsersResult[0]?.newUsers || 0,
+      year: year || 'all-time'
+    };
+
+    res.json({
+      success: true,
+      statistics: responseData
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch user statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user statistics',
+      error: {
+        code: 'USER_STATS_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage || 'No SQL error message'
+      }
+    });
+  }
+});
+
+
+
+
+router.get('/sectors/stats', async (req, res) => {
+  try {
+    // Query to get all sectors with their statistics
+    const [sectors] = await db.promise().query(`
+      SELECT 
+        s.sector_id,
+        s.sector_name,
+        COALESCE(SUM(f.area), 0) AS total_land_area,
+        COUNT(DISTINCT f.farmer_id) AS total_farmers,
+        COALESCE(SUM(fy.volume), 0) AS total_yield_volume,
+        COALESCE(SUM(fy.Value), 0) AS total_yield_value
+      FROM sectors s
+      LEFT JOIN farm_products p ON s.sector_id = p.sector_id
+      LEFT JOIN farms f ON JSON_CONTAINS(f.products, CONCAT('"', p.id, '"'), '$')
+      LEFT JOIN farmer_yield fy ON fy.product_id = p.id AND fy.farm_id = f.farm_id
+      GROUP BY s.sector_id, s.sector_name
+      ORDER BY s.sector_name
+    `);
+
+    // Additional query to get yield trends by month for each sector
+    const [yieldTrends] = await db.promise().query(`
+      SELECT 
+        s.sector_id,
+        DATE_FORMAT(fy.harvest_date, '%Y-%m') AS month,
+        SUM(fy.volume) AS monthly_volume,
+        SUM(fy.Value) AS monthly_value
+      FROM sectors s
+      JOIN farm_products p ON s.sector_id = p.sector_id
+      JOIN farmer_yield fy ON fy.product_id = p.id
+      WHERE fy.harvest_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+      GROUP BY s.sector_id, DATE_FORMAT(fy.harvest_date, '%Y-%m')
+      ORDER BY s.sector_id, month
+    `);
+
+    // Process the data to include yield trends with each sector
+    const result = sectors.map(sector => {
+      const trends = yieldTrends
+        .filter(trend => trend.sector_id === sector.sector_id)
+        .map(trend => ({
+          month: trend.month,
+          volume: parseFloat(trend.monthly_volume) || 0,
+          value: parseFloat(trend.monthly_value) || 0
+        }));
+
+      return {
+        sectorId: sector.sector_id,
+        sectorName: sector.sector_name,
+        totalLandArea: parseFloat(sector.total_land_area) || 0,
+        totalFarmers: parseInt(sector.total_farmers) || 0,
+        totalYieldVolume: parseFloat(sector.total_yield_volume) || 0,
+        totalYieldValue: parseFloat(sector.total_yield_value) || 0,
+        yieldTrends: trends
+      };
+    });
+
+    res.json({
+      success: true,
+      sectors: result
+    });
+  } catch (error) {
+    console.error('Failed to fetch sector statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sector statistics',
+      error: {
+        code: 'SECTOR_STATS_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+
+
+
+
+// Protected route example
+router.get('/profile', authenticate, (req, res) => {
+  res.json({
+    success: true,
+    user: req.user.dbUser
+  });
+});
+
+module.exports = router;

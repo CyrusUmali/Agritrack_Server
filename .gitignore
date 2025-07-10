@@ -1,0 +1,9 @@
+# .gitignore for Node.js
+node_modules/
+.env
+*.log
+.DS_Store
+dist/
+firebase-admin.json
+token.json
+credentials.json
