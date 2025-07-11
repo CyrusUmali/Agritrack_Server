@@ -24,7 +24,7 @@ router.get('/db-test', async (req, res) => {
     
     res.json({
       success: true,
-      message: 'Database connection is working',
+      message: 'Database connection is workingsss',
       data: {
         testCalculation: result[0].solution, // Should be 2
         serverTime: new Date().toISOString()
@@ -3706,8 +3706,23 @@ router.get('/farmer-statistics', async (req, res) => {
   }
 });
 
-router.get('/yields/top-contributors', async (req, res) => {
+router.get('/top-contributors', async (req, res) => {
   try {
+    // First verify basic table access
+    const [farmerCount] = await db.promise().query('SELECT COUNT(*) as count FROM farmers');
+    const [yieldCount] = await db.promise().query('SELECT COUNT(*) as count FROM farmer_yield WHERE volume > 0');
+    
+   
+    // If no data exists, return early with informative message
+    if (farmerCount[0].count === 0 || yieldCount[0].count === 0) {
+      return res.json({
+        success: true,
+        message: 'No farmer data or yield records available',
+        contributors: []
+      });
+    }
+
+    // Then run the main query
     const [contributors] = await db.promise().query(`
       SELECT 
         f.id as farmer_id,
@@ -3729,6 +3744,7 @@ router.get('/yields/top-contributors', async (req, res) => {
       LIMIT 6
     `);
 
+   
     res.json({
       success: true,
       contributors: contributors.map(contributor => ({
@@ -3752,6 +3768,41 @@ router.get('/yields/top-contributors', async (req, res) => {
       }
     });
   }
+
+
+ 
+
+
+
+});
+
+router.get('/top-test', async (req, res) => {
+  
+
+
+  try {
+    // Simple query to test the connection
+    const [result] = await db.promise().query('SELECT 1 + 1 AS solution');
+    
+    res.json({
+      success: true,
+      message: 'Database connection is workingsss',
+      data: {
+        testCalculation: result[0].solution, // Should be 2
+        serverTime: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Database connection test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Database connection test failed',
+      error: error.message
+    });
+  }
+
+
+
 });
 
 

@@ -4,23 +4,12 @@ const db = mysql.createConnection({
   // host: "localhost",
   // user: "root",
   // password: "",
-  // database: "agritrack"
-
-
-  // host: "bgxhkim7mv48vw6ugp6x-mysql.services.clever-cloud.com",
-  // user: "ujkqqzzc0fzagmjx",
-  // password: "NYYysEPMdqvpKw7sRidu",
-  // database: "bgxhkim7mv48vw6ugp6x",
-
-
-
+  // database: "agritrack" 
   host: process.env.MYSQL_HOST,
   user: process.env.MYSQL_USER,
   password: process.env.MYSQL_PASSWORD,
   database: process.env.MYSQL_DATABASE,
-  port: process.env.MYSQL_PORT || 3306
- 
-  
+  port: process.env.MYSQL_PORT || 3306 
 });
 
 db.connect((err) => {

@@ -65,7 +65,7 @@ app.use((req, res, next) => {
 
 // Start server
 app.listen(3001, '0.0.0.0', () => {
-  console.log(`Server running on:
+  console.log(`Server running here:
   - http://localhost:3001
   - http://192.168.56.1:3001`);
 });
