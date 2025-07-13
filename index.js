@@ -8,7 +8,7 @@ const app = express();
 const allowedOrigins = [
   /^http:\/\/localhost:\d+$/,
   "http://192.168.56.1:3001",
-  
+  "https://cyrusumali.github.io",
   "http://localhost:3001",
   /^http:\/\/192\.168\.56\.1:\d+$/,
   "http://192.168.38.197:8000",  // Add this line'
