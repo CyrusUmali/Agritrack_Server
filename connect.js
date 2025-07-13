@@ -1,23 +1,32 @@
-const mysql = require('mysql2');
+const mysql = require('mysql2/promise'); // Note the /promise suffix
 
-const db = mysql.createConnection({
+// Create a connection pool instead of a single connection
+const pool = mysql.createPool({
+
   // host: "localhost",
   // user: "root",
-  // password: "",
+  // password: "",n
   // database: "agritrack" 
-  host: process.env.MYSQL_HOST,
-  user: process.env.MYSQL_USER,
-  password: process.env.MYSQL_PASSWORD,
-  database: process.env.MYSQL_DATABASE,
-  port: process.env.MYSQL_PORT || 3306 
+  host: process.env.MYSQL_HOST || "localhost",
+  user: process.env.MYSQL_USER || "root",
+  password: process.env.MYSQL_PASSWORD || "",
+  database: process.env.MYSQL_DATABASE || "agritrack",
+  port: process.env.MYSQL_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10, // Adjust based on your needs
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000
 });
 
-db.connect((err) => {
-  if (err) {
+// Test the pool connection
+pool.getConnection()
+  .then(connection => {
+    console.log('Connected to MySQL database');
+    connection.release(); // Release the connection back to the pool
+  })
+  .catch(err => {
     console.error('Error connecting to MySQL:', err);
-    return;
-  }
-  console.log('Connected to MySQL database');
-});
+  });
 
-module.exports = db;  // Exporting just the db object
+module.exports = pool;
