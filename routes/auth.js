@@ -3,9 +3,198 @@ const express = require('express');
 const router = express.Router();
 const authenticate = require('../middleware/firebase-auth-middleware');
 const admin = require('firebase-admin');
-const db = require('../connect');
+const pool = require('../connect');
+
+
+
 
 const { sendTestEmail } = require('../gmailService'); // update path as needed
+
+
+
+
+router.post('/login', async (req, res) => {
+  try {
+    const { firebaseToken } = req.body;
+
+    if (!firebaseToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Firebase token required',
+        error: {
+          code: 'MISSING_TOKEN',
+          details: 'No firebaseToken provided in request body'
+        }
+      });
+    }
+
+    // Verify the token
+    let decodedToken;
+    try {
+      decodedToken = await admin.auth().verifyIdToken(firebaseToken);
+    } catch (firebaseError) {
+      console.error('Firebase token verification failed:', firebaseError);
+
+      const errorDetails = {
+        code: firebaseError.code || 'FIREBASE_AUTH_ERROR',
+        message: firebaseError.message,
+        stack: process.env.NODE_ENV === 'development' ? firebaseError.stack : undefined
+      };
+
+      return res.status(401).json({
+        success: false,
+        message: 'Firebase authentication failed',
+        error: errorDetails,
+        suggestions: {
+          'auth/id-token-expired': 'Request a new token from the client',
+          'auth/argument-error': 'Verify the token format is correct',
+          'auth/invalid-id-token': 'Ensure the token is properly encoded'
+        }[firebaseError.code] || 'Please try again or contact support'
+      });
+    }
+
+    // Get user from MySQL
+    let users;
+    try {
+      [users] = await pool.query(
+        'SELECT * FROM users WHERE firebase_uid = ?',
+        [decodedToken.uid]
+      );
+    } catch (dbError) {
+      console.error('Database query failed:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database operation failed',
+        error: {
+          code: 'DATABASE_ERROR',
+          details: dbError.message,
+          sqlMessage: dbError.sqlMessage,
+          sqlState: dbError.sqlState
+        }
+      });
+    }
+
+    if (!users.length) {
+      return res.status(403).json({
+        success: false,
+        message: 'User not registered in our system',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: `Firebase UID ${decodedToken.uid} not found in database`,
+          firebaseUid: decodedToken.uid,
+          suggestion: 'Complete the registration process first'
+        }
+      });
+    }
+
+    // Check if user signed in with Google
+    const isGoogleSignIn = decodedToken.firebase &&
+      decodedToken.firebase.sign_in_provider === 'google.com';
+
+    const user = users[0];
+
+    // Prepare the base response
+    const response = {
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        fname: user.fname,
+        lname: user.lname,
+        sector_id: user.sector_id,
+        authProvider: isGoogleSignIn ? 'google' : 'email',
+        hasPassword: !isGoogleSignIn
+      },
+      token: firebaseToken,
+      tokenInfo: {
+        issuedAt: new Date(decodedToken.iat * 1000),
+        expiresAt: new Date(decodedToken.exp * 1000),
+        authTime: decodedToken.auth_time ? new Date(decodedToken.auth_time * 1000) : null,
+        signInProvider: decodedToken.firebase?.sign_in_provider || 'email'
+      }
+    };
+
+    // If user is a farmer, fetch and add farmer details
+    if (user.role === 'farmer') {
+      try {
+        const [farmers] = await pool.query(`
+          SELECT 
+            f.id,
+            f.user_id,
+            f.firstname,
+            f.middlename,
+            f.surname,
+            f.extension,
+            f.email,
+            f.phone,
+            f.address,
+            f.imageUrl,
+            f.created_at,
+            f.updated_at,
+            s.sector_name as sector,
+            s.sector_id as sectorId, 
+            f.barangay,
+            f.phone,        
+            f.farm_name as farmName,  
+            f.total_land_area          
+          FROM farmers f
+          LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+          WHERE f.user_id = ?
+        `, [user.id]);
+
+        if (farmers.length) {
+          const farmer = farmers[0];
+          response.farmer = {
+            id: farmer.id,
+            fullName: {
+              firstname: farmer.firstname,
+              middlename: farmer.middlename || null,
+              surname: farmer.surname || null,
+              extension: farmer.extension || null
+            },
+            userId: farmer.user_id,
+            name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
+            email: farmer.email,
+            phone: farmer.phone,
+            address: farmer.address,
+            sector: farmer.sector,
+            sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
+            imageUrl: farmer.imageUrl,
+            barangay: farmer.barangay || null,
+            contact: farmer.phone,
+            farmName: farmer.farmName,
+            hectare: parseFloat(farmer.total_land_area),
+            createdAt: farmer.created_at,
+            updatedAt: farmer.updated_at
+          };
+        }
+      } catch (error) {
+        console.error('Failed to fetch farmer details:', error);
+        // Don't fail the login if farmer details can't be fetched
+        // Just log the error and proceed without farmer details
+      }
+    }
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Unexpected login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during authentication',
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        details: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+
 
 // Add this to your Express routes
 router.get('/debug/time', (req, res) => {
@@ -20,7 +209,7 @@ router.get('/debug/time', (req, res) => {
 router.get('/db-test', async (req, res) => {
   try {
     // Simple query to test the connection
-    const [result] = await db.promise().query('SELECT 1 + 1 AS solution');
+    const [result] = await pool.query('SELECT 1 + 1 AS solution');
     
     res.json({
       success: true,
@@ -44,7 +233,7 @@ router.get('/db-test', async (req, res) => {
 
 router.get('/users', authenticate, async (req, res) => {
   try {
-    const [users] = await db.promise().query(`
+    const [users] = await pool.query(`
       SELECT 
         u.id,
         u.email,
@@ -132,7 +321,7 @@ router.post('/forgot-password', async (req, res) => {
     // Check if user exists
     let users;
     try {
-      [users] = await db.promise().query(
+      [users] = await pool.query(
         'SELECT id, email, name FROM users WHERE email = ?',
         [email]
       );
@@ -165,7 +354,7 @@ router.post('/forgot-password', async (req, res) => {
 
     // Delete any existing OTPs for this user
     try {
-      await db.promise().query(
+      await pool.query(
         'DELETE FROM password_reset_otps WHERE user_id = ?',
         [user.id]
       );
@@ -176,7 +365,7 @@ router.post('/forgot-password', async (req, res) => {
 
     // Store the new OTP
     try {
-      await db.promise().query(
+      await pool.query(
         'INSERT INTO password_reset_otps (user_id, otp, expires_at) VALUES (?, ?, ?)',
         [user.id, otp, expiresAt]
       );
@@ -258,7 +447,7 @@ router.post('/verify-reset-otp', async (req, res) => {
     // Find user
     let users;
     try {
-      [users] = await db.promise().query(
+      [users] = await pool.query(
         'SELECT id FROM users WHERE email = ?',
         [email]
       );
@@ -290,7 +479,7 @@ router.post('/verify-reset-otp', async (req, res) => {
     // Find valid OTP
     let otps;
     try {
-      [otps] = await db.promise().query(
+      [otps] = await pool.query(
         'SELECT * FROM password_reset_otps WHERE user_id = ? AND otp = ? AND expires_at > NOW()',
         [user.id, otp]
       );
@@ -370,7 +559,7 @@ router.post('/reset-password', async (req, res) => {
     // Find user
     let users;
     try {
-      [users] = await db.promise().query(
+      [users] = await pool.query(
         'SELECT id FROM users WHERE email = ?',
         [email]
       );
@@ -402,7 +591,7 @@ router.post('/reset-password', async (req, res) => {
     // Verify OTP is still valid
     let otps;
     try {
-      [otps] = await db.promise().query(
+      [otps] = await pool.query(
         'SELECT * FROM password_reset_otps WHERE user_id = ? AND otp = ? AND expires_at > NOW()',
         [user.id, otp]
       );
@@ -432,7 +621,7 @@ router.post('/reset-password', async (req, res) => {
     // Update password in Firebase
     try {
       // First get the user's Firebase UID
-      const [userRecords] = await db.promise().query(
+      const [userRecords] = await pool.query(
         'SELECT firebase_uid FROM users WHERE id = ?',
         [user.id]
       );
@@ -455,13 +644,13 @@ router.post('/reset-password', async (req, res) => {
         password: newPassword
       });
  
-  await db.promise().query(
+  await pool.query(
     'UPDATE users SET password = ? WHERE id = ?',
     [newPassword, user.id]
   );
 
       // Delete the used OTP
-      await db.promise().query(
+      await pool.query(
         'DELETE FROM password_reset_otps WHERE user_id = ?',
         [user.id]
       );
@@ -507,186 +696,6 @@ router.post('/reset-password', async (req, res) => {
 
 
 
-router.post('/login', async (req, res) => {
-  try {
-    const { firebaseToken } = req.body;
-
-    if (!firebaseToken) {
-      return res.status(400).json({
-        success: false,
-        message: 'Firebase token required',
-        error: {
-          code: 'MISSING_TOKEN',
-          details: 'No firebaseToken provided in request body'
-        }
-      });
-    }
-
-    // Verify the token
-    let decodedToken;
-    try {
-      decodedToken = await admin.auth().verifyIdToken(firebaseToken);
-    } catch (firebaseError) {
-      console.error('Firebase token verification failed:', firebaseError);
-
-      const errorDetails = {
-        code: firebaseError.code || 'FIREBASE_AUTH_ERROR',
-        message: firebaseError.message,
-        stack: process.env.NODE_ENV === 'development' ? firebaseError.stack : undefined
-      };
-
-      return res.status(401).json({
-        success: false,
-        message: 'Firebase authentication failed',
-        error: errorDetails,
-        suggestions: {
-          'auth/id-token-expired': 'Request a new token from the client',
-          'auth/argument-error': 'Verify the token format is correct',
-          'auth/invalid-id-token': 'Ensure the token is properly encoded'
-        }[firebaseError.code] || 'Please try again or contact support'
-      });
-    }
-
-    // Get user from MySQL
-    let users;
-    try {
-      [users] = await db.promise().query(
-        'SELECT * FROM users WHERE firebase_uid = ?',
-        [decodedToken.uid]
-      );
-    } catch (dbError) {
-      console.error('Database query failed:', dbError);
-      return res.status(500).json({
-        success: false,
-        message: 'Database operation failed',
-        error: {
-          code: 'DATABASE_ERROR',
-          details: dbError.message,
-          sqlMessage: dbError.sqlMessage,
-          sqlState: dbError.sqlState
-        }
-      });
-    }
-
-    if (!users.length) {
-      return res.status(403).json({
-        success: false,
-        message: 'User not registered in our system',
-        error: {
-          code: 'USER_NOT_FOUND',
-          details: `Firebase UID ${decodedToken.uid} not found in database`,
-          firebaseUid: decodedToken.uid,
-          suggestion: 'Complete the registration process first'
-        }
-      });
-    }
-
-    // Check if user signed in with Google
-    const isGoogleSignIn = decodedToken.firebase &&
-      decodedToken.firebase.sign_in_provider === 'google.com';
-
-    const user = users[0];
-
-    // Prepare the base response
-    const response = {
-      success: true,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        fname: user.fname,
-        lname: user.lname,
-        sector_id: user.sector_id,
-        authProvider: isGoogleSignIn ? 'google' : 'email',
-        hasPassword: !isGoogleSignIn
-      },
-      token: firebaseToken,
-      tokenInfo: {
-        issuedAt: new Date(decodedToken.iat * 1000),
-        expiresAt: new Date(decodedToken.exp * 1000),
-        authTime: decodedToken.auth_time ? new Date(decodedToken.auth_time * 1000) : null,
-        signInProvider: decodedToken.firebase?.sign_in_provider || 'email'
-      }
-    };
-
-    // If user is a farmer, fetch and add farmer details
-    if (user.role === 'farmer') {
-      try {
-        const [farmers] = await db.promise().query(`
-          SELECT 
-            f.id,
-            f.user_id,
-            f.firstname,
-            f.middlename,
-            f.surname,
-            f.extension,
-            f.email,
-            f.phone,
-            f.address,
-            f.imageUrl,
-            f.created_at,
-            f.updated_at,
-            s.sector_name as sector,
-            s.sector_id as sectorId, 
-            f.barangay,
-            f.phone,        
-            f.farm_name as farmName,  
-            f.total_land_area          
-          FROM farmers f
-          LEFT JOIN sectors s ON f.sector_id = s.sector_id 
-          WHERE f.user_id = ?
-        `, [user.id]);
-
-        if (farmers.length) {
-          const farmer = farmers[0];
-          response.farmer = {
-            id: farmer.id,
-            fullName: {
-              firstname: farmer.firstname,
-              middlename: farmer.middlename || null,
-              surname: farmer.surname || null,
-              extension: farmer.extension || null
-            },
-            userId: farmer.user_id,
-            name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
-            email: farmer.email,
-            phone: farmer.phone,
-            address: farmer.address,
-            sector: farmer.sector,
-            sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
-            imageUrl: farmer.imageUrl,
-            barangay: farmer.barangay || null,
-            contact: farmer.phone,
-            farmName: farmer.farmName,
-            hectare: parseFloat(farmer.total_land_area),
-            createdAt: farmer.created_at,
-            updatedAt: farmer.updated_at
-          };
-        }
-      } catch (error) {
-        console.error('Failed to fetch farmer details:', error);
-        // Don't fail the login if farmer details can't be fetched
-        // Just log the error and proceed without farmer details
-      }
-    }
-
-    res.json(response);
-
-  } catch (error) {
-    console.error('Unexpected login error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error during authentication',
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        details: error.message,
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
 
  
 
@@ -761,12 +770,12 @@ router.post('/register-farmer', async (req, res) => {
     }
 
     // 3. Check if email already exists in both users and farmers tables
-    const [existingUsers] = await db.promise().query(
+    const [existingUsers] = await pool.query(
       'SELECT id FROM users WHERE email = ?',
       [email]
     );
 
-    const [existingFarmers] = await db.promise().query(
+    const [existingFarmers] = await pool.query(
       'SELECT id FROM farmers WHERE email = ?',
       [email]
     );
@@ -797,7 +806,7 @@ router.post('/register-farmer', async (req, res) => {
     await admin.auth().setCustomUserClaims(firebaseUser.uid, { role: 'farmer' });
 
     // 5. Add to MySQL users table
-    [mysqlUserInsertResult] = await db.promise().query(
+    [mysqlUserInsertResult] = await pool.query(
       `INSERT INTO users 
       (firebase_uid, email, name, fname, lname, role, password) 
       VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -813,7 +822,7 @@ router.post('/register-farmer', async (req, res) => {
     );
 
     // 6. Create farmer record with all additional data
-    [farmerInsertResult] = await db.promise().query(
+    [farmerInsertResult] = await pool.query(
       `INSERT INTO farmers 
       (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, 
        sex, civil_status, spouse_name, house_hold_head, household_num, 
@@ -848,7 +857,7 @@ router.post('/register-farmer', async (req, res) => {
     );
 
     // 7. Get the complete farmer record with user info
-    const [completeFarmer] = await db.promise().query(
+    const [completeFarmer] = await pool.query(
       `SELECT 
         f.*,
         u.firebase_uid,
@@ -922,7 +931,7 @@ router.post('/register-farmer', async (req, res) => {
     // Rollback operations in reverse order
     if (farmerInsertResult?.insertId) {
       try {
-        await db.promise().query('DELETE FROM farmers WHERE id = ?', [farmerInsertResult.insertId]);
+        await pool.query('DELETE FROM farmers WHERE id = ?', [farmerInsertResult.insertId]);
       } catch (deleteError) {
         console.error('Failed to rollback farmer entry:', deleteError);
       }
@@ -930,7 +939,7 @@ router.post('/register-farmer', async (req, res) => {
 
     if (mysqlUserInsertResult?.insertId) {
       try {
-        await db.promise().query('DELETE FROM users WHERE id = ?', [mysqlUserInsertResult.insertId]);
+        await pool.query('DELETE FROM users WHERE id = ?', [mysqlUserInsertResult.insertId]);
       } catch (deleteError) {
         console.error('Failed to rollback MySQL user:', deleteError);
       }
@@ -1005,7 +1014,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
     }
 
     // First get the existing user data
-    const [existingUsers] = await db.promise().query(
+    const [existingUsers] = await pool.query(
       'SELECT * FROM users WHERE id = ?',
       [userId]
     );
@@ -1052,7 +1061,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
     // Email update requires additional checks
     if (email !== undefined && email !== existingUser.email) {
       // Check if new email is already taken
-      const [emailCheck] = await db.promise().query(
+      const [emailCheck] = await pool.query(
         'SELECT id FROM users WHERE email = ? AND id != ?',
         [email, userId]
       );
@@ -1173,11 +1182,11 @@ router.put('/users/:id', authenticate, async (req, res) => {
         WHERE id = ?
       `;
       const values = [...Object.values(updates), userId];
-      await db.promise().query(query, values);
+      await pool.query(query, values);
     }
 
     // Get the updated user data to return
-    const [updatedUsers] = await db.promise().query(`
+    const [updatedUsers] = await pool.query(`
       SELECT 
         u.id,
         u.email,
@@ -1261,7 +1270,7 @@ router.get('/sectors', async (req, res) => {
     const { year } = req.query;
 
     // Base query for sector information
-    const [sectors] = await db.promise().query(`
+    const [sectors] = await pool.query(`
       SELECT 
         s.sector_id,
         s.sector_name,
@@ -1287,7 +1296,7 @@ router.get('/sectors', async (req, res) => {
     }
 
     // Query for farm-based statistics (farmers, farms, land area)
-    const [farmStats] = await db.promise().query(`
+    const [farmStats] = await pool.query(`
       SELECT 
         s.sector_id,
         COUNT(DISTINCT f.farmer_id) as farmer_count,
@@ -1318,8 +1327,8 @@ router.get('/sectors', async (req, res) => {
 
     // Execute yield stats query with year parameter if provided
     const [yieldStats] = year
-      ? await db.promise().query(yieldStatsQuery, [year])
-      : await db.promise().query(yieldStatsQuery);
+      ? await pool.query(yieldStatsQuery, [year])
+      : await pool.query(yieldStatsQuery);
 
     // Build the totals query with optional year filter
     let totalsQuery = `
@@ -1340,8 +1349,8 @@ router.get('/sectors', async (req, res) => {
 
     // Execute totals query with year parameter if provided
     const [totals] = year
-      ? await db.promise().query(totalsQuery, [year])
-      : await db.promise().query(totalsQuery);
+      ? await pool.query(totalsQuery, [year])
+      : await pool.query(totalsQuery);
 
     // Combine sector info with their stats
     const processedSectors = sectors.map(sector => {
@@ -1411,7 +1420,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
     }
 
     // Base sector information
-    const [sectorInfo] = await db.promise().query(`
+    const [sectorInfo] = await pool.query(`
       SELECT 
         sector_id,
         sector_name,
@@ -1432,7 +1441,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
     }
 
     // Current year stats
-    const [currentStats] = await db.promise().query(`
+    const [currentStats] = await pool.query(`
       SELECT 
         COUNT(DISTINCT f.farmer_id) as total_farmers,
         COUNT(DISTINCT f.farm_id) as total_farms,
@@ -1451,7 +1460,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
     let growthMetrics = {};
     if (year) {
       const prevYear = parseInt(year) - 1;
-      const [prevYearStats] = await db.promise().query(`
+      const [prevYearStats] = await pool.query(`
         SELECT 
           SUM(fy.volume) as total_yield_volume,
           SUM(fy.Value) as total_yield_value
@@ -1474,7 +1483,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
     }
 
     // Annual yield data for the last 5 years
-    const [annualYield] = await db.promise().query(`
+    const [annualYield] = await pool.query(`
       SELECT 
         YEAR(fy.harvest_date) as year,
         SUM(fy.volume) as total_volume,
@@ -1539,7 +1548,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
 router.get('/sector-yield-trends', async (req, res) => {
   try {
     // First get all sectors
-    const [sectors] = await db.promise().query(`
+    const [sectors] = await pool.query(`
       SELECT sector_id, sector_name FROM sectors
       ORDER BY sector_name ASC
     `);
@@ -1552,7 +1561,7 @@ router.get('/sector-yield-trends', async (req, res) => {
     }
 
     // Get yield data by year for each sector (main sector aggregates)
-    const [yieldData] = await db.promise().query(`
+    const [yieldData] = await pool.query(`
       SELECT 
         p.sector_id,
         s.sector_name,
@@ -1567,7 +1576,7 @@ router.get('/sector-yield-trends', async (req, res) => {
     `);
 
     // Get all products with their sector information
-    const [products] = await db.promise().query(`
+    const [products] = await pool.query(`
       SELECT 
         p.id as product_id,
         p.name as product_name,
@@ -1579,7 +1588,7 @@ router.get('/sector-yield-trends', async (req, res) => {
     `);
 
     // Get yield data by product (subsectors)
-    const [productYieldData] = await db.promise().query(`
+    const [productYieldData] = await pool.query(`
       SELECT 
         p.id as product_id,
         p.name as product_name,
@@ -1741,9 +1750,9 @@ router.get('/shi-values', async (req, res) => {
         { farmerId }
       );
 
-      const [landStats] = await db.promise().query(landQuery, landParams);
-      const [productStats] = await db.promise().query(productQuery, productParams);
-      const [yieldStats] = await db.promise().query(yieldQuery, yieldParams);
+      const [landStats] = await pool.query(landQuery, landParams);
+      const [productStats] = await pool.query(productQuery, productParams);
+      const [yieldStats] = await pool.query(yieldQuery, yieldParams);
 
       res.json({
         success: true,
@@ -1807,11 +1816,11 @@ router.get('/shi-values', async (req, res) => {
         inactiveQuery += ` WHERE fy.farmer_id IS NULL`;
       }
 
-      const [landStats] = await db.promise().query(landQuery, landParams);
-      const [productStats] = await db.promise().query(productQuery, productParams);
-      const [yieldStats] = await db.promise().query(yieldQuery, yieldParams);
-      const [activeFarmers] = await db.promise().query(activeQuery, activeParams);
-      const [inactiveStats] = await db.promise().query(inactiveQuery, inactiveParams);
+      const [landStats] = await pool.query(landQuery, landParams);
+      const [productStats] = await pool.query(productQuery, productParams);
+      const [yieldStats] = await pool.query(yieldQuery, yieldParams);
+      const [activeFarmers] = await pool.query(activeQuery, activeParams);
+      const [inactiveStats] = await pool.query(inactiveQuery, inactiveParams);
 
       res.json({
         success: true,
@@ -1875,14 +1884,14 @@ router.get('/farm-statistics', async (req, res) => {
       `SELECT COUNT(DISTINCT farm_id) as totalFarms FROM farms`,
       { dateField: 'created_at' }
     );
-    const [totalFarmsResult] = await db.promise().query(farmQuery.query, farmQuery.params);
+    const [totalFarmsResult] = await pool.query(farmQuery.query, farmQuery.params);
 
     // 2. Total farm area (aggregated by farm_id to avoid duplicates)
     const areaQuery = addFilters(
       `SELECT farm_id, MAX(area) as area FROM farms GROUP BY farm_id`
     );
 
-    const [farmAreas] = await db.promise().query(areaQuery.query, areaQuery.params);
+    const [farmAreas] = await pool.query(areaQuery.query, areaQuery.params);
     // Ensure totalArea is a number by parsing each farm.area and providing a default 0
     const totalArea = farmAreas.reduce((sum, farm) => sum + (parseFloat(farm.area) || 0), 0);
 
@@ -1911,14 +1920,14 @@ router.get('/farm-statistics', async (req, res) => {
       yieldQuery += ` WHERE ${yieldConditions.join(' AND ')}`;
     }
 
-    const [avgYieldResult] = await db.promise().query(yieldQuery, yieldParams);
+    const [avgYieldResult] = await pool.query(yieldQuery, yieldParams);
 
     // 4. Unique farm owners
     const ownersQuery = addFilters(
       `SELECT COUNT(DISTINCT farmer_id) as uniqueOwners FROM farms`,
       { dateField: 'created_at' }
     );
-    const [uniqueOwnersResult] = await db.promise().query(ownersQuery.query, ownersQuery.params);
+    const [uniqueOwnersResult] = await pool.query(ownersQuery.query, ownersQuery.params);
 
     // Format the response data
     const responseData = {
@@ -2000,7 +2009,7 @@ router.get('/farmers-report', async (req, res) => {
 
     query += ' GROUP BY f.id';
 
-    const [farmers] = await db.promise().query(query, params);
+    const [farmers] = await pool.query(query, params);
 
     // Format the response
     const responseData = farmers.map(farmer => ({
@@ -2140,7 +2149,7 @@ router.get('/barangay-yields-report', async (req, res) => {
       `;
     }
 
-    const [barangays] = await db.promise().query('SELECT name FROM barangay ORDER BY name');
+    const [barangays] = await pool.query('SELECT name FROM barangay ORDER BY name');
 
     query = `
       SELECT 
@@ -2192,7 +2201,7 @@ router.get('/barangay-yields-report', async (req, res) => {
       query += 'barangay_name, fy.harvest_date DESC';
     }
 
-    const [yields] = await db.promise().query(query, params);
+    const [yields] = await pool.query(query, params);
 
     // Format response
     let formattedYields;
@@ -2351,7 +2360,7 @@ router.get('/sector-yields-report', async (req, res) => {
       `;
     }
 
-    const [sectors] = await db.promise().query('SELECT sector_id, sector_name FROM sectors ORDER BY sector_name');
+    const [sectors] = await pool.query('SELECT sector_id, sector_name FROM sectors ORDER BY sector_name');
 
     query = `
       SELECT 
@@ -2392,7 +2401,7 @@ router.get('/sector-yields-report', async (req, res) => {
       query += 'sector_name, fy.harvest_date DESC';
     }
 
-    const [yields] = await db.promise().query(query, params);
+    const [yields] = await pool.query(query, params);
 
     // Format response
     let formattedYields;
@@ -2611,7 +2620,7 @@ router.get('/farmer-yields-report', async (req, res) => {
       query += ' ORDER BY fy.harvest_date DESC, farmer_name, product_name';
     }
 
-    const [yields] = await db.promise().query(query, params);
+    const [yields] = await pool.query(query, params);
 
     // Format response
     const formattedYields = yields.map(yield => {
@@ -2795,7 +2804,7 @@ router.get('/product-yields-report', async (req, res) => {
       query += 'fy.harvest_date DESC, product_name, sector_name';
     }
 
-    const [yields] = await db.promise().query(query, params);
+    const [yields] = await pool.query(query, params);
 
     // Format response with consistent harvest_date field
     let formattedYields;
@@ -2946,7 +2955,7 @@ router.get('/yield-distribution', async (req, res) => {
       ORDER BY s.sector_name, p.name
     `;
 
-    const [yieldDistribution] = await db.promise().query(query, params);
+    const [yieldDistribution] = await pool.query(query, params);
 
     // Organize the data by sector
     const distributionBySector = {};
@@ -3086,7 +3095,7 @@ router.get('/farmer-yield-distribution', async (req, res) => {
       ORDER BY total_volume DESC
     `;
 
-    const [productDistribution] = await db.promise().query(query, params);
+    const [productDistribution] = await pool.query(query, params);
 
     // Calculate grand totals
     const grandTotal = {
@@ -3194,10 +3203,10 @@ router.get('/farms', async (req, res) => {
     // Add ordering
     farmQuery += ` ORDER BY f.farm_name ASC`;
 
-    const [farms] = await db.promise().query(farmQuery);
+    const [farms] = await pool.query(farmQuery);
 
     // Get all products to create a mapping
-    const [products] = await db.promise().query('SELECT id, name FROM farm_products');
+    const [products] = await pool.query('SELECT id, name FROM farm_products');
     const productMap = {};
     products.forEach(product => {
       productMap[product.id] = product.name;
@@ -3276,7 +3285,7 @@ router.get('/products', authenticate, async (req, res) => {
 
     query += ' ORDER BY p.created_at DESC';
 
-    const [products] = await db.promise().query(query, params);
+    const [products] = await pool.query(query, params);
 
     res.json({
       success: true,
@@ -3351,8 +3360,8 @@ router.get('/yields/:farmerId?', async (req, res) => {
 
     // Execute query with or without farmerId parameter
     const [yields] = farmerId
-      ? await db.promise().query(query, [farmerId])
-      : await db.promise().query(query);
+      ? await pool.query(query, [farmerId])
+      : await pool.query(query);
 
     res.json({
       success: true,
@@ -3396,7 +3405,7 @@ router.get('/yields/:farmerId?', async (req, res) => {
 
 router.get('/farmers', authenticate, async (req, res) => {
   try {
-    const [farmers] = await db.promise().query(`
+    const [farmers] = await pool.query(`
       SELECT 
         f.id,
         f.user_id,
@@ -3510,7 +3519,7 @@ router.get('/yield-statistics', async (req, res) => {
       FROM farmer_yield fy
       JOIN farm_products p ON fy.product_id = p.id
     `);
-    const [totalYieldResult] = await db.promise().query(totalYieldQuery.query, totalYieldQuery.params);
+    const [totalYieldResult] = await pool.query(totalYieldQuery.query, totalYieldQuery.params);
 
     // 2. Average yield per hectare
     const avgYieldQuery = addFilters(`
@@ -3520,7 +3529,7 @@ router.get('/yield-statistics', async (req, res) => {
       JOIN farms farm ON fy.farm_id = farm.farm_id
       JOIN farm_products p ON fy.product_id = p.id
     `);
-    const [avgYieldResult] = await db.promise().query(avgYieldQuery.query, avgYieldQuery.params);
+    const [avgYieldResult] = await pool.query(avgYieldQuery.query, avgYieldQuery.params);
 
     // 3. Top crop yield - using WHERE 1=1 for simpler condition addition
     const topCropQuery = addFilters(`
@@ -3534,7 +3543,7 @@ router.get('/yield-statistics', async (req, res) => {
       ORDER BY totalVolume DESC
       LIMIT 1
     `);
-    const [topCropResult] = await db.promise().query(topCropQuery.query, topCropQuery.params);
+    const [topCropResult] = await pool.query(topCropQuery.query, topCropQuery.params);
 
     // 4. This month's yield
     const currentYear = new Date().getFullYear().toString();
@@ -3546,7 +3555,7 @@ router.get('/yield-statistics', async (req, res) => {
       JOIN farm_products p ON fy.product_id = p.id
       ${isCurrentYear ? `WHERE fy.harvest_date >= DATE_FORMAT(NOW(), '%Y-%m-01')` : ''}
     `);
-    const [thisMonthResult] = await db.promise().query(thisMonthQuery.query, thisMonthQuery.params);
+    const [thisMonthResult] = await pool.query(thisMonthQuery.query, thisMonthQuery.params);
 
     // Format response
     res.json({
@@ -3615,7 +3624,7 @@ router.get('/farmer-statistics', async (req, res) => {
       SELECT COUNT(*) as totalFarmers 
       FROM farmers f
     `);
-    const [totalResult] = await db.promise().query(totalQuery.query, totalQuery.params);
+    const [totalResult] = await pool.query(totalQuery.query, totalQuery.params);
 
     // 2. Active farmers (assuming status field exists)
     const activeQuery = addFilters(`
@@ -3623,7 +3632,7 @@ router.get('/farmer-statistics', async (req, res) => {
       FROM farmers f 
       WHERE f.status = 'active'
     `);
-    const [activeResult] = await db.promise().query(activeQuery.query, activeQuery.params);
+    const [activeResult] = await pool.query(activeQuery.query, activeQuery.params);
 
     // 3. Inactive farmers (assuming status field exists)
     const inactiveQuery = addFilters(`
@@ -3631,7 +3640,7 @@ router.get('/farmer-statistics', async (req, res) => {
       FROM farmers f 
       WHERE f.status = 'inactive'
     `);
-    const [inactiveResult] = await db.promise().query(inactiveQuery.query, inactiveQuery.params);
+    const [inactiveResult] = await pool.query(inactiveQuery.query, inactiveQuery.params);
 
     // 4. Registered farmers (with user account)
     const registeredQuery = addFilters(`
@@ -3639,7 +3648,7 @@ router.get('/farmer-statistics', async (req, res) => {
       FROM farmers f 
       WHERE f.user_id IS NOT NULL AND f.user_id != 0
     `);
-    const [registeredResult] = await db.promise().query(registeredQuery.query, registeredQuery.params);
+    const [registeredResult] = await pool.query(registeredQuery.query, registeredQuery.params);
 
     // 5. New farmers this month (if year is current, otherwise count for selected year)
     let newFarmersQuery;
@@ -3674,7 +3683,7 @@ router.get('/farmer-statistics', async (req, res) => {
       }
     }
 
-    const [newFarmersResult] = await db.promise().query(newFarmersQuery, newFarmersParams);
+    const [newFarmersResult] = await pool.query(newFarmersQuery, newFarmersParams);
 
     // Format the response
     const responseData = {
@@ -3709,8 +3718,8 @@ router.get('/farmer-statistics', async (req, res) => {
 router.get('/top-contributors', async (req, res) => {
   try {
     // First verify basic table access
-    const [farmerCount] = await db.promise().query('SELECT COUNT(*) as count FROM farmers');
-    const [yieldCount] = await db.promise().query('SELECT COUNT(*) as count FROM farmer_yield WHERE volume > 0');
+    const [farmerCount] = await pool.query('SELECT COUNT(*) as count FROM farmers');
+    const [yieldCount] = await pool.query('SELECT COUNT(*) as count FROM farmer_yield WHERE volume > 0');
     
    
     // If no data exists, return early with informative message
@@ -3723,7 +3732,7 @@ router.get('/top-contributors', async (req, res) => {
     }
 
     // Then run the main query
-    const [contributors] = await db.promise().query(`
+    const [contributors] = await pool.query(`
       SELECT 
         f.id as farmer_id,
         f.firstname,
@@ -3782,7 +3791,7 @@ router.get('/top-test', async (req, res) => {
 
   try {
     // Simple query to test the connection
-    const [result] = await db.promise().query('SELECT 1 + 1 AS solution');
+    const [result] = await pool.query('SELECT 1 + 1 AS solution');
     
     res.json({
       success: true,
@@ -3832,7 +3841,7 @@ router.post('/users', authenticate, async (req, res) => {
     }
 
     // Check if email already exists in database
-    const [existingUsers] = await db.promise().query(
+    const [existingUsers] = await pool.query(
       'SELECT id FROM users WHERE email = ?',
       [email]
     );
@@ -3906,7 +3915,7 @@ router.post('/users', authenticate, async (req, res) => {
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
 
-    [mysqlUserInsertResult] = await db.promise().query(
+    [mysqlUserInsertResult] = await pool.query(
       `INSERT INTO users 
       (firebase_uid, email, name, fname, lname, role, sector_id, password) 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -3926,7 +3935,7 @@ router.post('/users', authenticate, async (req, res) => {
     if (role.toLowerCase() === 'farmer') {
       if (farmerId) {
         // Update existing farmer record to link to the new user
-        [farmerUpdateResult] = await db.promise().query(
+        [farmerUpdateResult] = await pool.query(
           `UPDATE farmers 
            SET user_id = ?, updated_at = NOW()
            WHERE id = ?`,
@@ -3966,7 +3975,7 @@ router.post('/users', authenticate, async (req, res) => {
         }
 
         // Insert into farmers table
-        [farmerUpdateResult] = await db.promise().query(
+        [farmerUpdateResult] = await pool.query(
           `INSERT INTO farmers 
            (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, sector_id, imageUrl, created_at, updated_at) 
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
@@ -4004,7 +4013,7 @@ router.post('/users', authenticate, async (req, res) => {
     if (role.toLowerCase() === 'farmer' && (farmerUpdateResult?.insertId || farmerId)) {
       const farmerRecordId = farmerId || farmerUpdateResult.insertId;
 
-      const [farmerData] = await db.promise().query(
+      const [farmerData] = await pool.query(
         `SELECT 
           f.id,
           f.name,
@@ -4056,7 +4065,7 @@ router.post('/users', authenticate, async (req, res) => {
     // Rollback operations in reverse order
     if (farmerUpdateResult?.insertId) {
       try {
-        await db.promise().query('DELETE FROM farmers WHERE id = ?', [farmerUpdateResult.insertId]);
+        await pool.query('DELETE FROM farmers WHERE id = ?', [farmerUpdateResult.insertId]);
       } catch (deleteError) {
         console.error('Failed to rollback farmer entry:', deleteError);
       }
@@ -4064,7 +4073,7 @@ router.post('/users', authenticate, async (req, res) => {
 
     if (mysqlUserInsertResult?.insertId) {
       try {
-        await db.promise().query('DELETE FROM users WHERE id = ?', [mysqlUserInsertResult.insertId]);
+        await pool.query('DELETE FROM users WHERE id = ?', [mysqlUserInsertResult.insertId]);
       } catch (deleteError) {
         console.error('Failed to rollback MySQL user:', deleteError);
       }
@@ -4131,7 +4140,7 @@ router.post('/farmers', authenticate, async (req, res) => {
 
     // Only check email uniqueness if email is provided and not empty or default
     if (email && email.trim() !== '' && email.trim() !== DEFAULT_EMAIL) {
-      const [emailCheck] = await db.promise().query(
+      const [emailCheck] = await pool.query(
         'SELECT id FROM farmers WHERE email = ?',
         [email]
       );
@@ -4154,7 +4163,7 @@ router.post('/farmers', authenticate, async (req, res) => {
     const farmerPhone = phone || DEFAULT_PHONE;
 
     // Insert new farmer - handle empty name parts by setting to NULL
-    const [result] = await db.promise().query(
+    const [result] = await pool.query(
       `INSERT INTO farmers 
        (name , firstname, middlename, surname, extension, email, phone, barangay, sector_id, imageUrl, created_at, updated_at) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
@@ -4173,7 +4182,7 @@ router.post('/farmers', authenticate, async (req, res) => {
     );
 
     // Get the newly created farmer with sector name
-    const [newFarmer] = await db.promise().query(
+    const [newFarmer] = await pool.query(
       `SELECT 
         f.id,
         f.name,
@@ -4250,7 +4259,7 @@ router.delete('/users/:id', authenticate, async (req, res) => {
     const userId = req.params.id;
 
     // 2. Get user from MySQL to get Firebase UID and check if it's linked to a farmer
-    const [users] = await db.promise().query(
+    const [users] = await pool.query(
       'SELECT firebase_uid, role FROM users WHERE id = ?',
       [userId]
     );
@@ -4267,7 +4276,7 @@ router.delete('/users/:id', authenticate, async (req, res) => {
 
     // 3. If user is a farmer, find and update the linked farmer record
     if (userRole.toLowerCase() === 'farmer') {
-      await db.promise().query(
+      await pool.query(
         'UPDATE farmers SET user_id = 0 WHERE user_id = ?',
         [userId]
       );
@@ -4285,7 +4294,7 @@ router.delete('/users/:id', authenticate, async (req, res) => {
     }
 
     // 5. Delete from MySQL
-    await db.promise().query(
+    await pool.query(
       'DELETE FROM users WHERE id = ?',
       [userId]
     );
@@ -4355,7 +4364,7 @@ router.delete('/farms/:id', async (req, res) => {
 
   try {
     // Check if the farm exists
-    const [existingFarm] = await db.promise().query(
+    const [existingFarm] = await pool.query(
       'SELECT * FROM farms WHERE farm_id = ?',
       [farmId]
     );
@@ -4368,7 +4377,7 @@ router.delete('/farms/:id', async (req, res) => {
     }
 
     // Delete the farm
-    await db.promise().query(
+    await pool.query(
       'DELETE FROM farms WHERE farm_id = ?',
       [farmId]
     );
@@ -4435,7 +4444,7 @@ router.post('/farms/', async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     `;
 
-    const [result] = await db.promise().query(insertQuery, [
+    const [result] = await pool.query(insertQuery, [
       name,
       JSON.stringify(formattedVertices),
       barangay || 'San Diego',
@@ -4447,7 +4456,7 @@ router.post('/farms/', async (req, res) => {
     ]);
 
     // Get the newly created farm
-    const [farm] = await db.promise().query(`
+    const [farm] = await pool.query(`
       SELECT 
         f.*,
         s.sector_name
@@ -4551,7 +4560,7 @@ router.put('/farms/:id', async (req, res) => {
       WHERE farm_id = ?
     `;
 
-    await db.promise().query(updateQuery, [
+    await pool.query(updateQuery, [
       name,
       JSON.stringify(formattedVertices),
       barangay,
@@ -4565,7 +4574,7 @@ router.put('/farms/:id', async (req, res) => {
 
     // Get the updated farm with product names
     // Modified query to work with MariaDB
-    const [farm] = await db.promise().query(`
+    const [farm] = await pool.query(`
       SELECT 
         f.*,
         s.sector_name,
@@ -4669,7 +4678,7 @@ router.put('/farmsProfile/:id', async (req, res) => {
       WHERE farm_id = ?
     `;
 
-    await db.promise().query(updateQuery, [
+    await pool.query(updateQuery, [
       name,
       barangay,
       sectorId,
@@ -4681,7 +4690,7 @@ router.put('/farmsProfile/:id', async (req, res) => {
 
     // Get the updated farm with product names
     // Modified query to work with MariaDB
-    const [farm] = await db.promise().query(`
+    const [farm] = await pool.query(`
       SELECT 
         f.*,
         s.sector_name,
@@ -4762,7 +4771,7 @@ router.get('/farms/:id', async (req, res) => {
       LIMIT 1
     `;
 
-    const [farms] = await db.promise().query(farmQuery, [farmId]);
+    const [farms] = await pool.query(farmQuery, [farmId]);
 
     if (farms.length === 0) {
       return res.status(404).json({
@@ -4774,7 +4783,7 @@ router.get('/farms/:id', async (req, res) => {
     const farm = farms[0];
 
     // Get all products to create a mapping
-    const [products] = await db.promise().query('SELECT id, name FROM farm_products');
+    const [products] = await pool.query('SELECT id, name FROM farm_products');
     const productMap = {};
     products.forEach(product => {
       productMap[product.id] = product.name;
@@ -4860,10 +4869,10 @@ router.get('/farms/by-product/:productId', async (req, res) => {
       WHERE JSON_CONTAINS(f.products, ?)
     `;
 
-    const [farms] = await db.promise().query(query, [JSON.stringify(productId)]);
+    const [farms] = await pool.query(query, [JSON.stringify(productId)]);
 
     // Get product names for mapping
-    const [products] = await db.promise().query('SELECT id, name FROM farm_products');
+    const [products] = await pool.query('SELECT id, name FROM farm_products');
     const productMap = {};
     products.forEach(product => {
       productMap[product.id] = product.name;
@@ -4874,7 +4883,7 @@ router.get('/farms/by-product/:productId', async (req, res) => {
     let yearlyYields = {};
 
     if (farmIds.length > 0) {
-      const [yields] = await db.promise().query(`
+      const [yields] = await pool.query(`
         SELECT farm_id, SUM(volume) as total_volume, SUM(Value) as total_value
         FROM farmer_yield
         WHERE product_id = ? 
@@ -4944,7 +4953,7 @@ router.get('/yields/:farmId', async (req, res) => {
     const { farmId } = req.params;
 
     // First, verify the farm exists
-    const [farmCheck] = await db.promise().query(
+    const [farmCheck] = await pool.query(
       'SELECT farm_id FROM farms WHERE farm_id = ?',
       [farmId]
     );
@@ -4957,7 +4966,7 @@ router.get('/yields/:farmId', async (req, res) => {
     }
 
     // Get yields for the specific farm
-    const [yields] = await db.promise().query(`
+    const [yields] = await pool.query(`
       SELECT 
         fy.id,
         fy.farmer_id,
@@ -5044,7 +5053,7 @@ router.post('/yields', async (req, res) => {
     } = req.body;
 
     // First, check if the farm already has this product
-    const [farmResult] = await db.promise().query(
+    const [farmResult] = await pool.query(
       'SELECT products FROM farms WHERE farm_id = ?',
       [farm_id]
     );
@@ -5071,14 +5080,14 @@ router.post('/yields', async (req, res) => {
       farmProducts.push(product_id);
 
       // Update the farm record
-      await db.promise().query(
+      await pool.query(
         'UPDATE farms SET products = ? WHERE farm_id = ?',
         [JSON.stringify(farmProducts), farm_id]
       );
     }
 
     // Proceed with creating the yield record
-    const [result] = await db.promise().query(
+    const [result] = await pool.query(
       `INSERT INTO farmer_yield 
    (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -5096,7 +5105,7 @@ router.post('/yields', async (req, res) => {
     );
 
     // Get the newly created yield record
-    const [yields] = await db.promise().query(
+    const [yields] = await pool.query(
       `SELECT 
         fy.*,
         f.firstname,
@@ -5151,7 +5160,7 @@ router.get('/yields/farm/:farmId', async (req, res) => {
   const { farmId } = req.params;
 
   try {
-    const [yields] = await db.promise().query(`
+    const [yields] = await pool.query(`
       SELECT 
         fy.id,
         fy.farmer_id,
@@ -5227,7 +5236,7 @@ router.get('/yields/product/:productId', async (req, res) => {
   const { productId } = req.params;
 
   try {
-    const [yields] = await db.promise().query(`
+    const [yields] = await pool.query(`
       SELECT 
         fy.id,
         fy.farmer_id,
@@ -5314,7 +5323,7 @@ router.post('/products', authenticate, async (req, res) => {
     }
 
     // Check if sector exists
-    const [sectorCheck] = await db.promise().query(
+    const [sectorCheck] = await pool.query(
       'SELECT sector_id FROM sectors WHERE sector_id = ?',
       [sector_id]
     );
@@ -5331,7 +5340,7 @@ router.post('/products', authenticate, async (req, res) => {
     }
 
     // Insert new product including optional imageUrl
-    const [result] = await db.promise().query(
+    const [result] = await pool.query(
       `INSERT INTO farm_products 
    (name, description, sector_id, imgUrl, created_at, updated_at) 
    VALUES (?, ?, ?, ?, NOW(), NOW())`,
@@ -5339,7 +5348,7 @@ router.post('/products', authenticate, async (req, res) => {
     );
 
     // Get the newly created product with sector name
-    const [newProduct] = await db.promise().query(
+    const [newProduct] = await pool.query(
       `SELECT 
         p.id,
         p.name,
@@ -5402,7 +5411,7 @@ router.put('/products/:id', authenticate, async (req, res) => {
     }
 
     // Check if product exists
-    const [productCheck] = await db.promise().query(
+    const [productCheck] = await pool.query(
       'SELECT id FROM farm_products WHERE id = ?',
       [productId]
     );
@@ -5419,7 +5428,7 @@ router.put('/products/:id', authenticate, async (req, res) => {
     }
 
     // Check if sector exists
-    const [sectorCheck] = await db.promise().query(
+    const [sectorCheck] = await pool.query(
       'SELECT sector_id FROM sectors WHERE sector_id = ?',
       [sector_id]
     );
@@ -5436,7 +5445,7 @@ router.put('/products/:id', authenticate, async (req, res) => {
     }
 
     // Update the product
-    await db.promise().query(
+    await pool.query(
       `UPDATE farm_products 
        SET 
          name = ?, 
@@ -5449,7 +5458,7 @@ router.put('/products/:id', authenticate, async (req, res) => {
     );
 
     // Get the updated product with sector name
-    const [updatedProduct] = await db.promise().query(
+    const [updatedProduct] = await pool.query(
       `SELECT 
         p.id,
         p.name,
@@ -5509,7 +5518,7 @@ router.delete('/products/:id', authenticate, async (req, res) => {
     const userSectorId = req.user.dbUser.sector_id;
 
     // First verify the product exists and belongs to the user's sector
-    const [productCheck] = await db.promise().query(
+    const [productCheck] = await pool.query(
       `SELECT p.id 
        FROM farm_products p
        WHERE p.id = ? 
@@ -5529,7 +5538,7 @@ router.delete('/products/:id', authenticate, async (req, res) => {
     }
 
     // Delete the product
-    await db.promise().query(
+    await pool.query(
       'DELETE FROM farm_products WHERE id = ?',
       [productId]
     );
@@ -5561,7 +5570,7 @@ router.delete('/products/:id', authenticate, async (req, res) => {
 
 router.get('/yields/:id', async (req, res) => {
   try {
-    const [yields] = await db.promise().query(
+    const [yields] = await pool.query(
       `SELECT 
         fy.*,
         f.firstname,
@@ -5626,7 +5635,7 @@ router.put('/yields/:id', async (req, res) => {
       status
     } = req.body;
 
-    await db.promise().query(
+    await pool.query(
       `UPDATE farmer_yield 
        SET 
          farmer_id = ?, 
@@ -5655,7 +5664,7 @@ router.put('/yields/:id', async (req, res) => {
     );
 
     // Get the updated yield record
-    const [yields] = await db.promise().query(
+    const [yields] = await pool.query(
       `SELECT 
         fy.*,
         f.firstname,
@@ -5708,7 +5717,7 @@ router.put('/yields/:id', async (req, res) => {
 // Delete a yield record
 router.delete('/yields/:id', async (req, res) => {
   try {
-    const [result] = await db.promise().query(
+    const [result] = await pool.query(
       'DELETE FROM farmer_yield WHERE id = ?',
       [req.params.id]
     );
@@ -5743,7 +5752,7 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
       });
     }
 
-    const [farmers] = await db.promise().query(`
+    const [farmers] = await pool.query(`
       SELECT 
         f.*,
         s.sector_name as sector,
@@ -5853,7 +5862,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     }
 
     // Check if farmer exists
-    const [farmerCheck] = await db.promise().query(
+    const [farmerCheck] = await pool.query(
       'SELECT id FROM farmers WHERE id = ?',
       [farmerId]
     );
@@ -5870,7 +5879,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     }
 
     // Check if email is being used by another farmer
-    const [emailCheck] = await db.promise().query(
+    const [emailCheck] = await pool.query(
       'SELECT id FROM farmers WHERE email = ? AND id != ?',
       [email, farmerId]
     );
@@ -5890,7 +5899,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     const name = `${firstname}${middlename ? ' ' + middlename : ''}${surname ? ' ' + surname : ''}${extension ? ' ' + extension : ''}`;
 
     // Update farmer
-    await db.promise().query(
+    await pool.query(
       `UPDATE farmers SET 
         name = ?,
         firstname = ?,
@@ -5950,7 +5959,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     );
 
     // Get the updated farmer with sector name
-    const [updatedFarmer] = await db.promise().query(
+    const [updatedFarmer] = await pool.query(
       `SELECT 
         f.*,
         s.sector_name as sector,
@@ -6020,7 +6029,7 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
     const farmerId = req.params.id;
 
     // Check if farmer exists
-    const [farmerCheck] = await db.promise().query(
+    const [farmerCheck] = await pool.query(
       'SELECT id FROM farmers WHERE id = ?',
       [farmerId]
     );
@@ -6037,7 +6046,7 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
     }
 
     // Delete the farmer
-    await db.promise().query(
+    await pool.query(
       'DELETE FROM farmers WHERE id = ?',
       [farmerId]
     );
@@ -6072,7 +6081,7 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
 
 router.get('/users', authenticate, async (req, res) => {
   try {
-    const [users] = await db.promise().query(`
+    const [users] = await pool.query(`
       SELECT 
         u.id,
         u.email,
@@ -6134,13 +6143,13 @@ router.get('/user-statistics', async (req, res) => {
     const totalUsersQuery = addYearFilter(
       `SELECT COUNT(*) as totalUsers FROM users`
     );
-    const [totalUsersResult] = await db.promise().query(totalUsersQuery.query, totalUsersQuery.params);
+    const [totalUsersResult] = await pool.query(totalUsersQuery.query, totalUsersQuery.params);
 
     // 2. Users by role
     const rolesQuery = addYearFilter(
       `SELECT role, COUNT(*) as count FROM users GROUP BY role`
     );
-    const [rolesResult] = await db.promise().query(rolesQuery.query, rolesQuery.params);
+    const [rolesResult] = await pool.query(rolesQuery.query, rolesQuery.params);
 
     // Format roles data
     const roles = rolesResult.reduce((acc, row) => {
@@ -6167,7 +6176,7 @@ router.get('/user-statistics', async (req, res) => {
       }
     }
 
-    const [newUsersResult] = await db.promise().query(newUsersQuery, newUsersParams);
+    const [newUsersResult] = await pool.query(newUsersQuery, newUsersParams);
 
     // 4. Active users today (placeholder - would need login tracking)
     const activeToday = 0;
@@ -6206,7 +6215,7 @@ router.get('/user-statistics', async (req, res) => {
 router.get('/sectors/stats', async (req, res) => {
   try {
     // Query to get all sectors with their statistics
-    const [sectors] = await db.promise().query(`
+    const [sectors] = await pool.query(`
       SELECT 
         s.sector_id,
         s.sector_name,
@@ -6223,7 +6232,7 @@ router.get('/sectors/stats', async (req, res) => {
     `);
 
     // Additional query to get yield trends by month for each sector
-    const [yieldTrends] = await db.promise().query(`
+    const [yieldTrends] = await pool.query(`
       SELECT 
         s.sector_id,
         DATE_FORMAT(fy.harvest_date, '%Y-%m') AS month,

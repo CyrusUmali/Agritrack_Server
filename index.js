@@ -6,15 +6,16 @@ const path = require('path');
 const app = express();
 
 const allowedOrigins = [
-  /^http:\/\/localhost:\d+$/,
-  "http://192.168.56.1:3001",
-  "https://cyrusumali.github.io",
-  "http://localhost:3001",
-  /^http:\/\/192\.168\.56\.1:\d+$/,
-  "http://192.168.38.197:8000",  // Add this line'
-  "http://192.168.230.155:8000",  // Add this line
-  /^http:\/\/192\.168\.38\.197:\d+$/ , // And this for any port
 
+  // "http://192.168.56.1:3001",
+
+  // "http://localhost:3001",
+  // /^http:\/\/192\.168\.56\.1:\d+$/,
+  // "http://192.168.38.197:8000",  
+  // "http://192.168.230.155:8000",   
+  // /^http:\/\/192\.168\.38\.197:\d+$/ ,  
+  /^http:\/\/localhost:\d+$/,
+  "https://cyrusumali.github.io",
   /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Allows any 192.168.x.x address
   /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,  // Allows any 10.x.x.x address (common for local networks)
   /^http:\/\/172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+:\d+$/, // Allows 172.16-172.31 addresses

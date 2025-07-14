@@ -1,5 +1,5 @@
 const admin = require('firebase-admin');
-const db = require('../connect');
+const pool = require('../connect');
 
 let firebaseInitialized = false;
 
@@ -90,7 +90,7 @@ const authenticateFirebaseToken = async (req, res, next) => {
     // Database lookup with error handling
     let users;
     try {
-      [users] = await db.promise().query(
+      [users] = await pool.query(
         'SELECT * FROM users WHERE firebase_uid = ?',
         [decodedToken.uid]
       );
