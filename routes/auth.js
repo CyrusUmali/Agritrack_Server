@@ -3,14 +3,221 @@ const express = require('express');
 const router = express.Router();
 const authenticate = require('../middleware/firebase-auth-middleware');
 const admin = require('firebase-admin');
-const pool = require('../connect');
-
-
-
+const pool = require('../connect'); 
 
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 
+
+ 
+
+// Get all annotations
+router.get('/annotations', authenticate, async (req, res) => {
+  try {
+    const [annotations] = await pool.query(`
+      SELECT 
+        id, 
+        year, 
+        value, 
+        text, 
+        coordinate_unit AS coordinateUnit,
+        horizontal_alignment AS horizontalAlignment,
+        vertical_alignment AS verticalAlignment,
+        created_at AS createdAt
+      FROM chart_annotations
+      ORDER BY created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      annotations
+    });
+  } catch (error) {
+    console.error('Failed to fetch annotations:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch annotations' });
+  }
+});
+
+// Create new annotation
+router.post('/annotations', authenticate, async (req, res) => {
+  try {
+    const { 
+      year, 
+      value, 
+      text, 
+      coordinateUnit = 'point', 
+      horizontalAlignment = 'near', 
+      verticalAlignment = 'far' 
+    } = req.body;
+
+    if (!year || !text) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'year and text are required' 
+      });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO chart_annotations 
+        (year, value, text, coordinate_unit, horizontal_alignment, vertical_alignment, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [year, value || 0, text, coordinateUnit, horizontalAlignment, verticalAlignment]
+    );
+
+    const [newAnnotation] = await pool.query(
+      `SELECT 
+        id, 
+        year, 
+        value, 
+        text, 
+        coordinate_unit AS coordinateUnit,
+        horizontal_alignment AS horizontalAlignment,
+        vertical_alignment AS verticalAlignment,
+        created_at AS createdAt
+       FROM chart_annotations WHERE id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      annotation: newAnnotation[0]
+    });
+  } catch (error) {
+    console.error('Failed to create annotation:', error);
+    res.status(500).json({ success: false, message: 'Failed to create annotation' });
+  }
+});
+
+// Update annotation
+router.put('/annotations/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      year, 
+      value, 
+      text, 
+      coordinateUnit, 
+      horizontalAlignment, 
+      verticalAlignment 
+    } = req.body;
+
+    if (!text || !year) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'year and text are required' 
+      });
+    }
+
+    await pool.query(
+      `UPDATE chart_annotations 
+       SET 
+         year = ?, 
+         value = ?, 
+         text = ?,
+         coordinate_unit = ?,
+         horizontal_alignment = ?,
+         vertical_alignment = ?
+       WHERE id = ?`,
+      [
+        year, 
+        value || 0, 
+        text,
+        coordinateUnit,
+        horizontalAlignment,
+        verticalAlignment,
+        id
+      ]
+    );
+
+    const [updatedAnnotation] = await pool.query(
+      `SELECT 
+        id, 
+        year, 
+        value, 
+        text, 
+        coordinate_unit AS coordinateUnit,
+        horizontal_alignment AS horizontalAlignment,
+        vertical_alignment AS verticalAlignment,
+        created_at AS createdAt
+       FROM chart_annotations WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      annotation: updatedAnnotation[0]
+    });
+  } catch (error) {
+    console.error('Failed to update annotation:', error);
+    res.status(500).json({ success: false, message: 'Failed to update annotation' });
+  }
+});
+
+// Delete annotation (remains the same as before)
+router.delete('/annotations/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await pool.query(
+      `DELETE FROM chart_annotations WHERE id = ?`,
+      [id]
+    );
+
+    res.status(204).end();
+  } catch (error) {
+    console.error('Failed to delete annotation:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete annotation' });
+  }
+});
+
+
+
+
+
+
+
+router.get('/users', authenticate, async (req, res) => {
+  try {
+    const [users] = await pool.query(`
+      SELECT 
+        u.id,
+        u.email,
+        u.role,
+        u.created_at,
+        u.fname as firstname,
+        u.lname as surname,
+        u.contact as phone,
+        u.status,
+        s.sector_name as sector,
+        s.sector_id as sectorId
+      FROM users u
+      LEFT JOIN sectors s ON u.sector_id = s.sector_id 
+      ORDER BY u.created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      users: users.map(user => ({
+        id: user.id,
+        fullName: {
+          firstname: user.firstname,
+          surname: user.surname
+        },
+        name: `${user.firstname}${user.surname ? ' ' + user.surname : ''}` || '---',
+        email: user.email || '---',
+        phone: user.phone,
+        role: user.role,
+        status: user.status || 'Active',
+        sector: user.sector,
+        sectorId: user.sectorId || null,
+        createdAt: user.created_at
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to fetch users:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+  }
+});
 
 
 router.post('/login', async (req, res) => {
@@ -1002,10 +1209,10 @@ router.put('/users/:id', authenticate, async (req, res) => {
     try {
       await admin.auth().getUserByEmail(email);
       // If no error, email exists
-      return res.status(409).json({
-        success: false,
-        message: 'Email already in use',
-      });
+      // return res.status(409).json({
+      //   success: false,
+      //   message: 'Email already in use',
+      // });
     } catch (error) {
       // Only proceed if error code is 'auth/user-not-found'
       if (error.code !== 'auth/user-not-found') {
@@ -3197,7 +3404,7 @@ router.get('/farms', async (req, res) => {
 
     // Add WHERE clause if farmerId is provided
     if (farmerId) {
-      farmQuery += ` WHERE f.farmer_id = ${db.escape(farmerId)}`;
+      farmQuery += ` WHERE f.farmer_id = ${pool.escape(farmerId)}`;
     }
 
     // Add ordering
@@ -3356,7 +3563,7 @@ router.get('/yields/:farmerId?', async (req, res) => {
     }
 
     // Changed from harvest_date to created_at for sorting
-    query += ` ORDER BY fy.updated_at DESC`;
+    query += ` ORDER BY fy.harvest_date DESC`;
 
     // Execute query with or without farmerId parameter
     const [yields] = farmerId
@@ -3366,6 +3573,7 @@ router.get('/yields/:farmerId?', async (req, res) => {
     res.json({
       success: true,
       yields: yields.map(yieldItem => ({
+        test:"test",
         id: yieldItem.id,
         farmerId: yieldItem.farmer_id,
         farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
@@ -4630,9 +4838,7 @@ router.put('/farms/:id', async (req, res) => {
   }
 });
 
-
-
-// PUT update farm
+ 
 router.put('/farmsProfile/:id', async (req, res) => {
   try {
     const farmId = req.params.id;
@@ -5183,7 +5389,8 @@ router.get('/yields/farm/:farmId', async (req, res) => {
         p.sector_id,
         p.imgUrl as product_imgUrl,   
         s.sector_name,
-        farm.area as farm_area
+        farm.area as farm_area,
+        farm.farm_name
       FROM farmer_yield fy
       LEFT JOIN farmers f ON fy.farmer_id = f.id
       LEFT JOIN farm_products p ON fy.product_id = p.id
@@ -5194,11 +5401,12 @@ router.get('/yields/farm/:farmId', async (req, res) => {
     `, [farmId]);
 
     res.json({
-      success: true,
+      success: true, 
       yields: yields.map(yieldItem => ({
         id: yieldItem.id,
         farmerId: yieldItem.farmer_id,
         farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+        farmName:yieldItem.farm_name,
         productId: yieldItem.product_id,
         productName: yieldItem.product_name,
         productImage: yieldItem.product_imgUrl,
@@ -5596,6 +5804,7 @@ router.get('/yields/:id', async (req, res) => {
     res.json({
       success: true,
       yield: {
+        
         id: yieldItem.id,
         farmerId: yieldItem.farmer_id,
         farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
@@ -5619,8 +5828,7 @@ router.get('/yields/:id', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch yield' });
   }
 });
-
-// Update a yield record
+ 
 router.put('/yields/:id', async (req, res) => {
   try {
     const {
