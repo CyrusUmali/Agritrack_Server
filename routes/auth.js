@@ -5512,7 +5512,7 @@ router.get('/yields/product/:productId', async (req, res) => {
     });
   }
 });
-
+  
 
 
 
@@ -5843,6 +5843,9 @@ router.put('/yields/:id', async (req, res) => {
       status
     } = req.body;
 
+    // Convert ISO date to MySQL compatible format
+    const mysqlHarvestDate = harvest_date ? new Date(harvest_date).toISOString().slice(0, 19).replace('T', ' ') : null;
+
     await pool.query(
       `UPDATE farmer_yield 
        SET 
@@ -5860,7 +5863,7 @@ router.put('/yields/:id', async (req, res) => {
       [
         farmer_id,
         product_id,
-        harvest_date,
+        mysqlHarvestDate,  // Use the converted date here
         farm_id,
         volume,
         notes,
@@ -5871,7 +5874,7 @@ router.put('/yields/:id', async (req, res) => {
       ]
     );
 
-    // Get the updated yield record
+    // Rest of your code remains the same...
     const [yields] = await pool.query(
       `SELECT 
         fy.*,
