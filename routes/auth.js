@@ -7,6 +7,368 @@ const pool = require('../connect');
 
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
+router.get('/associations', async (req, res) => {
+  try {
+    const { year } = req.query;
+
+    // First get all associations
+    const [associations] = await pool.query(`
+      SELECT 
+        a.id,
+        a.name,
+        a.description,
+        a.created_at as createdAt,
+        a.updated_at as updatedAt
+      FROM associations a
+      ORDER BY a.name ASC
+    `);
+
+    if (!associations.length) {
+      return res.json({
+        success: true,
+        associations: [],
+        totals: {
+          totalMembers: 0,
+          totalAssociations: 0,
+          totalActive: 0,
+          totalLandArea: 0,
+          totalFarms: 0,
+          totalFarmers: 0,
+          avgFarmSize: 0,
+          totalYields: 0,
+          totalYieldVolume: 0,
+          totalYieldValue: 0
+        },
+        topAssociation: null
+      });
+    }
+
+    // Get member counts and farm statistics for each association
+    const [associationStats] = await pool.query(`
+      SELECT 
+        f.assoc_id as associationId,
+        COUNT(DISTINCT f.id) as total_farmers,
+        COUNT(DISTINCT fm.farm_id) as total_farms,
+        SUM(fm.area) as total_land_area,
+        AVG(fm.area) as avg_farm_size,
+        COUNT(DISTINCT fy.id) as total_yields,
+        SUM(fy.volume) as total_yield_volume,
+        SUM(fy.Value) as total_yield_value
+      FROM farmers f
+      LEFT JOIN farms fm ON f.id = fm.farmer_id
+      LEFT JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
+      WHERE f.assoc_id IS NOT NULL
+      ${year ? 'AND YEAR(fy.harvest_date) = ?' : ''}
+      GROUP BY f.assoc_id
+    `, year ? [year] : []);
+
+    // Get previous year stats for growth calculation if year is provided
+    let growthMetricsMap = {};
+    if (year) {
+      const prevYear = parseInt(year) - 1;
+      const [prevYearStats] = await pool.query(`
+        SELECT 
+          f.assoc_id as associationId,
+          SUM(fy.volume) as total_yield_volume,
+          SUM(fy.Value) as total_yield_value
+        FROM farmers f
+        JOIN farms fm ON f.id = fm.farmer_id
+        JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
+        WHERE f.assoc_id IS NOT NULL AND YEAR(fy.harvest_date) = ?
+        GROUP BY f.assoc_id
+      `, [prevYear]);
+
+      prevYearStats.forEach(row => {
+        const currentStats = associationStats.find(s => s.associationId === row.associationId);
+        if (currentStats) {
+          const currentVol = currentStats.total_yield_volume || 0;
+          const prevVol = row.total_yield_volume || 0;
+          const currentVal = currentStats.total_yield_value || 0;
+          const prevVal = row.total_yield_value || 0;
+
+          growthMetricsMap[row.associationId] = {
+            yieldVolumeGrowth: prevVol ? ((currentVol - prevVol) / prevVol * 100) : 0,
+            yieldValueGrowth: prevVal ? ((currentVal - prevVal) / prevVal * 100) : 0
+          };
+        }
+      });
+    }
+
+    // Get annual yield data for each association (last 5 years)
+    const [annualYieldData] = await pool.query(`
+      SELECT 
+        f.assoc_id as associationId,
+        YEAR(fy.harvest_date) as year,
+        SUM(fy.volume) as total_volume,
+        SUM(fy.Value) as total_value
+      FROM farmers f
+      JOIN farms fm ON f.id = fm.farmer_id
+      JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
+      WHERE f.assoc_id IS NOT NULL
+      GROUP BY f.assoc_id, YEAR(fy.harvest_date)
+      ORDER BY f.assoc_id, year DESC
+    `);
+
+    // Organize annual yield data by association
+    const annualYieldMap = {};
+    annualYieldData.forEach(row => {
+      if (!annualYieldMap[row.associationId]) {
+        annualYieldMap[row.associationId] = [];
+      }
+      annualYieldMap[row.associationId].push({
+        year: row.year,
+        totalVolume: parseFloat(row.total_volume),
+        totalValue: parseFloat(row.total_value)
+      });
+    });
+
+    // Enhance associations with stats
+    const enhancedAssociations = associations.map(assoc => {
+      const stats = associationStats.find(s => s.associationId === assoc.id) || {};
+      const growthMetrics = growthMetricsMap[assoc.id] || {};
+      const annualYield = annualYieldMap[assoc.id] ? 
+        annualYieldMap[assoc.id].slice(0, 5).sort((a, b) => b.year - a.year) : [];
+
+      return {
+        id: assoc.id,
+        name: assoc.name,
+        description: assoc.description,
+        createdAt: assoc.createdAt,
+        updatedAt: assoc.updatedAt,
+        stats: {
+          totalFarmers: stats.total_farmers ? parseInt(stats.total_farmers) : 0,
+          totalFarms: stats.total_farms ? parseInt(stats.total_farms) : 0,
+          totalLandArea: stats.total_land_area ? parseFloat(stats.total_land_area) : 0,
+          avgFarmSize: stats.avg_farm_size ? parseFloat(stats.avg_farm_size) : 0,
+          totalYields: stats.total_yields ? parseInt(stats.total_yields) : 0,
+          totalYieldVolume: stats.total_yield_volume ? parseFloat(stats.total_yield_volume) : 0,
+          totalYieldValue: stats.total_yield_value ? parseFloat(stats.total_yield_value) : 0,
+          ...growthMetrics
+        },
+        annualYield
+      };
+    });
+
+    // Calculate totals
+    const totals = {
+      totalMembers: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalFarmers, 0),
+      totalAssociations: enhancedAssociations.length,
+      totalActive: 0, // Since we don't have an active flag
+      totalLandArea: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalLandArea, 0),
+      totalFarms: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalFarms, 0),
+      totalFarmers: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalFarmers, 0),
+      avgFarmSize: enhancedAssociations.reduce((sum, a) => sum + a.stats.avgFarmSize, 0) / enhancedAssociations.length,
+      totalYields: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYields, 0),
+      totalYieldVolume: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYieldVolume, 0),
+      totalYieldValue: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYieldValue, 0)
+    };
+
+    // Find top association by member count
+    let topAssociation = null;
+    if (enhancedAssociations.length > 0) {
+      const sortedByMembers = [...enhancedAssociations].sort((a, b) => 
+        b.stats.totalFarmers - a.stats.totalFarmers
+      );
+      topAssociation = {
+        id: sortedByMembers[0].id,
+        name: sortedByMembers[0].name,
+        memberCount: sortedByMembers[0].stats.totalFarmers,
+        totalLandArea: sortedByMembers[0].stats.totalLandArea,
+        totalYieldValue: sortedByMembers[0].stats.totalYieldValue
+      };
+    }
+
+    res.json({
+      success: true,
+      associations: enhancedAssociations,
+      totals,
+      topAssociation,
+      ...(year && { yearFilter: year })
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch association data:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch association data',
+      error: {
+        code: 'ASSOCIATION_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+ 
+
+// Get all associations
+// router.get('/associations', authenticate, async (req, res) => {
+//   try {
+//     const [associations] = await pool.query(`
+//       SELECT 
+//         id, 
+//         name, 
+//         description ,
+//         created_at AS createdAt,
+//         updated_at AS updatedAt
+//       FROM associations
+//       ORDER BY created_at DESC
+//     `);
+
+//     res.json({
+//       success: true,
+//       associations
+//     });
+//   } catch (error) {
+//     console.error('Failed to fetch associations:', error);
+//     res.status(500).json({ 
+//       success: false, 
+//       message: 'Failed to fetch associations' 
+//     });
+//   }
+// });
+
+// Create new association
+router.post('/associations', authenticate, async (req, res) => {
+  const { name, description } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Name is required' 
+    });
+  }
+
+  try {
+    const [result] = await pool.query(
+      'INSERT INTO associations (name, description) VALUES (?, ?)',
+      [name, description]
+    );
+
+    const [newAssociation] = await pool.query(
+      'SELECT id, name, description  FROM associations WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      association: newAssociation[0],
+      message: 'Association created successfully'
+    });
+  } catch (error) {
+    console.error('Failed to create association:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to create association' 
+    });
+  }
+});
+
+// Update association
+router.put('/associations/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { name, desc } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Name is required' 
+    });
+  }
+
+  try {
+    await pool.query(
+      'UPDATE associations SET name = ?, description = ? WHERE id = ?',
+      [name, desc, id]
+    );
+
+    const [updatedAssociation] = await pool.query(
+      'SELECT id, name, description   FROM associations WHERE id = ?',
+      [id]
+    );
+
+    if (updatedAssociation.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Association not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      association: updatedAssociation[0],
+      message: 'Association updated successfully'
+    });
+  } catch (error) {
+    console.error('Failed to update association:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update association' 
+    });
+  }
+});
+
+// Delete association
+router.delete('/associations/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [result] = await pool.query(
+      'DELETE FROM associations WHERE id = ?',
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Association not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Association deleted successfully'
+    });
+  } catch (error) {
+    console.error('Failed to delete association:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete association' 
+    });
+  }
+});
+
+// Get single association by ID
+router.get('/associations/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [association] = await pool.query(
+      'SELECT id, name, description   FROM associations WHERE id = ?',
+      [id]
+    );
+
+    if (association.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Association not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      association: association[0]
+    });
+  } catch (error) {
+    console.error('Failed to fetch association:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch association' 
+    });
+  }
+});
+ 
+
 
 
  
@@ -137,7 +499,7 @@ router.put('/annotations/:id', authenticate, async (req, res) => {
         text, 
         coordinate_unit AS coordinateUnit,
         horizontal_alignment AS horizontalAlignment,
-        vertical_alignment AS verticalAlignment,
+        vertical_alignment e verticalAlignment,
         created_at AS createdAt
        FROM chart_annotations WHERE id = ?`,
       [id]
@@ -189,9 +551,11 @@ router.get('/users', authenticate, async (req, res) => {
         u.contact as phone,
         u.status,
         s.sector_name as sector,
-        s.sector_id as sectorId
+        s.sector_id as sectorId,
+        f.id as farmerId  -- Add farmer ID from farmers table
       FROM users u
       LEFT JOIN sectors s ON u.sector_id = s.sector_id 
+      LEFT JOIN farmers f ON u.id = f.user_id  -- Join with farmers table
       ORDER BY u.created_at DESC
     `);
 
@@ -210,6 +574,7 @@ router.get('/users', authenticate, async (req, res) => {
         status: user.status || 'Active',
         sector: user.sector,
         sectorId: user.sectorId || null,
+        farmerId: user.role === 'farmer' ? user.farmerId : null,  // Only include farmerId for farmers
         createdAt: user.created_at
       }))
     });
@@ -294,11 +659,24 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    const user = users[0];
+
+    // Check if user status is Pending
+    if (user.status === 'Pending') {
+      return res.status(403).json({
+        success: false,
+        message: 'Account not yet approved',
+        error: {
+          code: 'ACCOUNT_PENDING',
+          details: 'Your account is pending approval by an administrator',
+          suggestion: 'Please wait for approval or contact support'
+        }
+      });
+    }
+
     // Check if user signed in with Google
     const isGoogleSignIn = decodedToken.firebase &&
       decodedToken.firebase.sign_in_provider === 'google.com';
-
-    const user = users[0];
 
     // Prepare the base response
     const response = {
@@ -311,6 +689,7 @@ router.post('/login', async (req, res) => {
         fname: user.fname,
         lname: user.lname,
         sector_id: user.sector_id,
+        status: user.status, // Include status in response
         authProvider: isGoogleSignIn ? 'google' : 'email',
         hasPassword: !isGoogleSignIn
       },
@@ -438,49 +817,7 @@ router.get('/db-test', async (req, res) => {
 
 
 
-router.get('/users', authenticate, async (req, res) => {
-  try {
-    const [users] = await pool.query(`
-      SELECT 
-        u.id,
-        u.email,
-        u.role,
-        u.created_at,
-        u.fname as firstname,
-        u.lname as surname,
-        u.contact as phone,
-        u.status,
-        s.sector_name as sector,
-        s.sector_id as sectorId
-      FROM users u
-      LEFT JOIN sectors s ON u.sector_id = s.sector_id 
-      ORDER BY u.created_at DESC
-    `);
-
-    res.json({
-      success: true,
-      users: users.map(user => ({
-        id: user.id,
-        fullName: {
-          firstname: user.firstname,
-          surname: user.surname
-        },
-        name: `${user.firstname}${user.surname ? ' ' + user.surname : ''}` || '---',
-        email: user.email || '---',
-        phone: user.phone,
-        role: user.role,
-        status: user.status || 'Active',
-        sector: user.sector,
-        sectorId: user.sectorId || null,
-        createdAt: user.created_at
-      }))
-    });
-  } catch (error) {
-    console.error('Failed to fetch users:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch users' });
-  }
-});
-
+ 
 
 
 
@@ -590,13 +927,70 @@ router.post('/forgot-password', async (req, res) => {
 
     // Send OTP via email using Gmail service
     try {
-      const subject = 'Password Reset OTP';
+      const subject = 'Password Reset OTP'; 
+      
       const message = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Password Reset Request</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+          }
+          .header {
+            color: #2c3e50;
+            border-bottom: 2px solid #f2f2f2;
+            padding-bottom: 10px;
+          }
+          .otp-code {
+            font-size: 24px;
+            font-weight: bold;
+            color: #e74c3c;
+            margin: 20px 0;
+            padding: 10px;
+            background: #f9f9f9;
+            display: inline-block;
+            border-radius: 4px;
+          }
+          .footer {
+            margin-top: 20px;
+            padding-top: 10px;
+            border-top: 2px solid #f2f2f2;
+            font-size: 12px;
+            color: #7f8c8d;
+          }
+          .button {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #3498db;
+            color: white !important;
+            text-decoration: none;
+            border-radius: 4px;
+            margin: 10px 0;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
         <h1>Password Reset Request</h1>
+        </div>
         <p>Hello ${user.name || 'User'},</p>
-        <p>Your OTP for password reset is: <strong>${otp}</strong></p>
-        <p>This OTP is valid for 15 minutes.</p>
-        <p>If you didn't request this, please ignore this email.</p>
+        <p>We received a request to reset your password. Please use the following OTP to proceed:</p>
+        <div class="otp-code">${otp}</div>
+        <p>This OTP is valid for 15 minutes. If you didn't request this, please ignore this email.</p>
+        <div class="footer">
+          <p>If you're having trouble with the OTP, please contact our support team.</p>
+          <p>© ${new Date().getFullYear()} Your Company Name. All rights reserved.</p>
+        </div>
+      </body>
+      </html>
       `;
 
       await sendTestEmail(user.email, subject, message);
@@ -735,6 +1129,7 @@ router.post('/verify-reset-otp', async (req, res) => {
     });
   }
 });
+
 
 // Reset password after OTP verification
 router.post('/reset-password', async (req, res) => {
@@ -900,10 +1295,6 @@ router.post('/reset-password', async (req, res) => {
 
 
 
-
-
-
-
  
 
 
@@ -965,8 +1356,16 @@ router.post('/register-farmer', async (req, res) => {
       personToNotify,
       ptnContact,
       ptnRelationship,
-      password
+      password,
+      association // Add this line (format: "id: name")
     } = req.body;
+
+
+    function extractId(input) {
+      if (!input) return null;
+      const parts = input.split(':');
+      return parts.length > 0 ? parseInt(parts[0].trim()) : null;
+    }
 
     // 2. Validate required fields
     if (!email || !name || !password) {
@@ -1012,11 +1411,10 @@ router.post('/register-farmer', async (req, res) => {
     // Set custom claims for farmer role
     await admin.auth().setCustomUserClaims(firebaseUser.uid, { role: 'farmer' });
 
-    // 5. Add to MySQL users table
     [mysqlUserInsertResult] = await pool.query(
       `INSERT INTO users 
-      (firebase_uid, email, name, fname, lname, role, password) 
-      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      (firebase_uid, email, name, fname, lname, role, password, status) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         firebaseUser.uid,
         email,
@@ -1024,18 +1422,17 @@ router.post('/register-farmer', async (req, res) => {
         firstname || name.split(' ')[0], // fallback to first part of name
         lname || name.split(' ').slice(1).join(' ') || null, // fallback to rest of name
         'farmer',
-        password
+        password,
+        'Pending'  // Set status to Active
       ]
     );
-
-    // 6. Create farmer record with all additional data
     [farmerInsertResult] = await pool.query(
       `INSERT INTO farmers 
       (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, 
        sex, civil_status, spouse_name, house_hold_head, household_num, 
        male_members_num, female_members_num, mother_maiden_name, religion, address, 
-       person_to_notify, ptn_contact, ptn_relationship, sector_id, created_at, updated_at) 
-      VALUES (?, ?, ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+       person_to_notify, ptn_contact, ptn_relationship, sector_id, assoc_id, created_at, updated_at) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         mysqlUserInsertResult.insertId,
         name,
@@ -1058,11 +1455,11 @@ router.post('/register-farmer', async (req, res) => {
         address || null,
         personToNotify || null,
         ptnContact || null,
-        ptnRelationship || null
-        , extractSectorId(sector), // This will extract just the numeric ID
+        ptnRelationship || null,
+        extractSectorId(sector),
+        extractId(association), // Extracted association ID
       ]
     );
-
     // 7. Get the complete farmer record with user info
     const [completeFarmer] = await pool.query(
       `SELECT 
@@ -2166,11 +2563,9 @@ router.get('/farm-statistics', async (req, res) => {
 });
 
 
-
-
 router.get('/farmers-report', async (req, res) => {
   try {
-    const { barangay, sector } = req.query; // Changed from sector_id to sector
+    const { barangay, sector, association } = req.query; // Added association parameter
 
     // Base query with optional filters
     let query = `
@@ -2184,12 +2579,15 @@ router.get('/farmers-report', async (req, res) => {
         f.barangay,
         s.sector_name as sector,
         s.sector_id,
-        COALESCE(SUM(farm.area), 0) as area,  -- Changed to sum of farm areas
+        a.name as association_name,  -- Added association name
+        a.id as association_id,      -- Added association id
+        COALESCE(SUM(farm.area), 0) as area,
         GROUP_CONCAT(DISTINCT fp.name SEPARATOR ', ') as products,
         GROUP_CONCAT(DISTINCT farm.farm_name SEPARATOR ', ') as farms,
         COALESCE(SUM(fy.volume), 0) as production_value
       FROM farmers f
       LEFT JOIN sectors s ON f.sector_id = s.sector_id
+      LEFT JOIN associations a ON f.assoc_id = a.id  -- Joined with associations table
       LEFT JOIN farms farm ON f.id = farm.farmer_id
       LEFT JOIN farmer_yield fy ON f.id = fy.farmer_id
       LEFT JOIN farm_products fp ON fy.product_id = fp.id
@@ -2210,6 +2608,11 @@ router.get('/farmers-report', async (req, res) => {
       params.push(sectorId);
     }
 
+    if (association && association !== 'all') {
+      conditions.push('a.id = ?');
+      params.push(association);
+    }
+
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');
     }
@@ -2224,6 +2627,7 @@ router.get('/farmers-report', async (req, res) => {
       'Contact': farmer.contact,
       'Barangay': farmer.barangay,
       'Sector': farmer.sector,
+      'Association': farmer.association_name || 'None', // Added association
       'Farms': farmer.farms ? farmer.farms.split(', ') : [],
       'Products': farmer.products ? farmer.products.split(', ') : [],
       '(Mt | Heads)': parseFloat(farmer.production_value) || 0,
@@ -2234,7 +2638,8 @@ router.get('/farmers-report', async (req, res) => {
       success: true,
       filters: {
         barangay: barangay || 'all',
-        sector: sector || 'all' // Changed from sector_id to sector
+        sector: sector || 'all',
+        association: association || 'all' // Added association to filters
       },
       count: responseData.length,
       farmers: responseData
@@ -2253,7 +2658,6 @@ router.get('/farmers-report', async (req, res) => {
     });
   }
 });
-
 
 router.get('/barangay-yields-report', async (req, res) => {
   try {
@@ -2699,13 +3103,13 @@ router.get('/sector-yields-report', async (req, res) => {
   }
 });
 
-
 router.get('/farmer-yields-report', async (req, res) => {
   try {
     // Extract and clean the IDs
     const farmerId = req.query.farmerId ? req.query.farmerId.split(':')[0].trim() : null;
     const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null;
     const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
+    const associationId = req.query.associationId ? req.query.associationId.split(':')[0].trim() : null; // Added association filter
 
     // Other params
     const { startDate, endDate, viewBy } = req.query;
@@ -2725,6 +3129,8 @@ router.get('/farmer-yields-report', async (req, res) => {
         b.name as barangay_name,
         fy.product_id,
         p.name as product_name,
+        a.name as association_name,
+        a.id as association_id,
         fy.harvest_date,
         fy.volume,
         fy.Value,
@@ -2736,6 +3142,7 @@ router.get('/farmer-yields-report', async (req, res) => {
       JOIN farmers f ON farm.farmer_id = f.id
       JOIN barangay b ON farm.parentBarangay = b.name
       LEFT JOIN farm_products p ON fy.product_id = p.id
+      LEFT JOIN associations a ON f.assoc_id = a.id
     `;
 
     const conditions = [];
@@ -2754,6 +3161,11 @@ router.get('/farmer-yields-report', async (req, res) => {
     if (productId && productId !== 'all') {
       conditions.push('fy.product_id = ?');
       params.push(productId);
+    }
+
+    if (associationId && associationId !== 'all') {
+      conditions.push('a.id = ?');
+      params.push(associationId);
     }
 
     if (dateRangeValid) {
@@ -2778,6 +3190,8 @@ router.get('/farmer-yields-report', async (req, res) => {
           b.name as barangay_name,
           fy.product_id,
           p.name as product_name,
+          a.name as association_name,
+          a.id as association_id,
           NULL as harvest_date,
           SUM(fy.volume) as volume,
           SUM(fy.Value) as Value,
@@ -2791,9 +3205,10 @@ router.get('/farmer-yields-report', async (req, res) => {
         JOIN farmers f ON farm.farmer_id = f.id
         JOIN barangay b ON farm.parentBarangay = b.name
         LEFT JOIN farm_products p ON fy.product_id = p.id
+        LEFT JOIN associations a ON f.assoc_id = a.id
         ${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}
-        GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), farm.farmer_id, fy.product_id
-        ORDER BY month_year DESC, farmer_name, product_name
+        GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), farm.farmer_id, fy.product_id, a.id
+        ORDER BY month_year DESC, farmer_name, product_name, association_name
       `;
     } else if (viewBy === 'Yearly') {
       query = `
@@ -2807,6 +3222,8 @@ router.get('/farmer-yields-report', async (req, res) => {
           b.name as barangay_name,
           fy.product_id,
           p.name as product_name,
+          a.name as association_name,
+          a.id as association_id,
           NULL as harvest_date,
           SUM(fy.volume) as volume,
           SUM(fy.Value) as Value,
@@ -2819,12 +3236,13 @@ router.get('/farmer-yields-report', async (req, res) => {
         JOIN farmers f ON farm.farmer_id = f.id
         JOIN barangay b ON farm.parentBarangay = b.name
         LEFT JOIN farm_products p ON fy.product_id = p.id
+        LEFT JOIN associations a ON f.assoc_id = a.id
         ${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}
-        GROUP BY YEAR(fy.harvest_date), farm.farmer_id, fy.product_id
-        ORDER BY year DESC, farmer_name, product_name
+        GROUP BY YEAR(fy.harvest_date), farm.farmer_id, fy.product_id, a.id
+        ORDER BY year DESC, farmer_name, product_name, association_name
       `;
     } else {
-      query += ' ORDER BY fy.harvest_date DESC, farmer_name, product_name';
+      query += ' ORDER BY fy.harvest_date DESC, farmer_name, product_name, association_name';
     }
 
     const [yields] = await pool.query(query, params);
@@ -2836,6 +3254,7 @@ router.get('/farmer-yields-report', async (req, res) => {
         farmer_name: yield.farmer_name,
         barangay: yield.barangay_name,
         product: yield.product_name,
+        association: yield.association_name || 'None',
         volume: parseFloat(yield.volume) || 0,
         total_value: yield.Value ? parseFloat(yield.Value) : null
       };
@@ -2865,13 +3284,11 @@ router.get('/farmer-yields-report', async (req, res) => {
       } else {
         return {
           ...baseData,
-          // id: yield.id,
           harvest_date: new Date(yield.harvest_date).toLocaleDateString('en-US', {
             year: 'numeric',
             month: 'long',
             day: 'numeric'
           }),
-          // farm_id: yield.farm_id
         };
       }
     });
@@ -2882,6 +3299,7 @@ router.get('/farmer-yields-report', async (req, res) => {
         farmerId: farmerId || 'all',
         barangayName: barangayName || 'all',
         productId: productId || 'all',
+        associationId: associationId || 'all',
         startDate: dateRangeValid ? startDate : 'all',
         endDate: dateRangeValid ? endDate : 'all',
         viewBy: viewBy || 'individual'
@@ -2905,12 +3323,12 @@ router.get('/farmer-yields-report', async (req, res) => {
 });
 
 
-
 router.get('/product-yields-report', async (req, res) => {
   try {
     // Extract and clean the IDs (keep only the numeric part)
     const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
     const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
+    const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null; // Added barangay filter
 
     // Other params
     const { startDate, endDate, viewBy } = req.query;
@@ -2930,7 +3348,9 @@ router.get('/product-yields-report', async (req, res) => {
       fy.volume,
       fy.Value,
       YEAR(fy.harvest_date) as harvest_year,
-      MONTH(fy.harvest_date) as harvest_month
+      MONTH(fy.harvest_date) as harvest_month,
+      farm.farm_name,
+      b.name as barangay_name
     `;
 
     if (viewBy === 'Monthly') {
@@ -2947,7 +3367,9 @@ router.get('/product-yields-report', async (req, res) => {
         MONTH(fy.harvest_date) as harvest_month,
         DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
         DATE_FORMAT(fy.harvest_date, '%M') as month_name,
-        LAST_DAY(fy.harvest_date) as period_date
+        LAST_DAY(fy.harvest_date) as period_date,
+        GROUP_CONCAT(DISTINCT farm.farm_name) as farm_names,
+        GROUP_CONCAT(DISTINCT b.name) as barangay_names
       `;
       groupBy = 'GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id, p.sector_id';
     } else if (viewBy === 'Yearly') {
@@ -2963,7 +3385,9 @@ router.get('/product-yields-report', async (req, res) => {
         YEAR(fy.harvest_date) as harvest_year,
         NULL as harvest_month,
         YEAR(fy.harvest_date) as year,
-        MAX(fy.harvest_date) as period_date
+        MAX(fy.harvest_date) as period_date,
+        GROUP_CONCAT(DISTINCT farm.farm_name) as farm_names,
+        GROUP_CONCAT(DISTINCT b.name) as barangay_names
       `;
       groupBy = 'GROUP BY YEAR(fy.harvest_date), fy.product_id, p.sector_id';
     }
@@ -2973,7 +3397,9 @@ router.get('/product-yields-report', async (req, res) => {
         ${selectFields}
       FROM farmer_yield fy
       JOIN farm_products p ON fy.product_id = p.id
-      LEFT JOIN sectors s ON p.sector_id = s.sector_id  /* Changed to join with product's sector */
+      LEFT JOIN sectors s ON p.sector_id = s.sector_id
+      JOIN farms farm ON fy.farm_id = farm.farm_id  /* Added join to farms table */
+      JOIN barangay b ON farm.parentBarangay = b.name  /* Added join to barangay table */
       WHERE 1=1
     `;
 
@@ -2986,8 +3412,14 @@ router.get('/product-yields-report', async (req, res) => {
     }
 
     if (sectorId) {
-      conditions.push('p.sector_id = ?');  /* Changed to filter by product's sector */
+      conditions.push('p.sector_id = ?');
       params.push(sectorId);
+    }
+
+    // Add barangay filter
+    if (barangayName && barangayName !== 'all') {
+      conditions.push('b.name = ?');
+      params.push(barangayName);
     }
 
     // Add date range filter if valid
@@ -3030,10 +3462,12 @@ router.get('/product-yields-report', async (req, res) => {
           sector: yield.sector_name,
           volume: parseFloat(yield.volume),
           total_value: yield.Value ? parseFloat(yield.Value) : null,
-          harvest_date: formattedDate, // Consistent field name
+          harvest_date: formattedDate,
           year: yield.harvest_year,
           month: yield.harvest_month,
-          month_name: yield.month_name
+          month_name: yield.month_name,
+          barangays: yield.barangay_names ? yield.barangay_names.split(',') : [],
+          farms: yield.farm_names ? yield.farm_names.split(',') : []
         };
       });
     } else if (viewBy === 'Yearly') {
@@ -3049,8 +3483,10 @@ router.get('/product-yields-report', async (req, res) => {
           sector: yield.sector_name,
           volume: parseFloat(yield.volume),
           total_value: yield.Value ? parseFloat(yield.Value) : null,
-          harvest_date: formattedDate, // Consistent field name
-          year: yield.harvest_year
+          harvest_date: formattedDate,
+          year: yield.harvest_year,
+          barangays: yield.barangay_names ? yield.barangay_names.split(',') : [],
+          farms: yield.farm_names ? yield.farm_names.split(',') : []
         };
       });
     } else {
@@ -3066,9 +3502,11 @@ router.get('/product-yields-report', async (req, res) => {
         return {
           product: yield.product_name,
           sector: yield.sector_name,
-          harvest_date: formattedDate, // Consistent field name
+          harvest_date: formattedDate,
           volume: parseFloat(yield.volume),
-          value: yield.Value ? parseFloat(yield.Value) : null
+          value: yield.Value ? parseFloat(yield.Value) : null,
+          farm_name: yield.farm_name,
+          barangay: yield.barangay_name
         };
       });
     }
@@ -3078,6 +3516,7 @@ router.get('/product-yields-report', async (req, res) => {
       filters: {
         productId: productId || 'all',
         sectorId: sectorId || 'all',
+        barangayName: barangayName || 'all', // Added to response
         startDate: dateRangeValid ? startDate : 'all',
         endDate: dateRangeValid ? endDate : 'all',
         viewBy: viewBy || 'individual'
@@ -3099,8 +3538,6 @@ router.get('/product-yields-report', async (req, res) => {
     });
   }
 });
-
-
 
 
 router.get('/yield-distribution', async (req, res) => {
@@ -3474,23 +3911,23 @@ router.get('/products', authenticate, async (req, res) => {
   try {
 
     let query = `
-      SELECT 
-        p.id,
-        p.name,
-        p.description,
-        p.imgUrl,
-        p.created_at,
-        p.updated_at,
-        s.sector_name
-      FROM farm_products p
-      JOIN sectors s ON p.sector_id = s.sector_id
+     SELECT 
+  p.id,
+  p.name,
+  p.description,
+  p.imgUrl,
+  p.created_at,
+  p.updated_at,
+  s.sector_name
+FROM farm_products p
+JOIN sectors s ON p.sector_id = s.sector_id 
     `;
 
     const params = [];
 
 
 
-    query += ' ORDER BY p.created_at DESC';
+    query += ' ORDER BY  p.name';
 
     const [products] = await pool.query(query, params);
 
@@ -3621,6 +4058,7 @@ router.get('/farmers', authenticate, async (req, res) => {
         f.middlename,
         f.surname,
         f.extension,
+        f.assoc_id,
         f.email,
         f.phone,
         f.address,
@@ -3629,12 +4067,17 @@ router.get('/farmers', authenticate, async (req, res) => {
         f.updated_at,
         s.sector_name as sector,
         s.sector_id as sectorId, 
+
+        a.name as AssociationName,
+        a.id as AssociationId, 
+
         f.barangay,
         f.phone,        
         f.farm_name as farmName,  
         f.total_land_area          
       FROM farmers f
       LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+       LEFT JOIN associations a ON f.assoc_id = a.id 
       ORDER BY f.created_at DESC
     `);
 
@@ -3648,6 +4091,7 @@ router.get('/farmers', authenticate, async (req, res) => {
           surname: farmer.surname || null,
           extension: farmer.extension || null
         },
+        association:farmer.AssociationName,
         userId: farmer.user_id,
         name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
         email: farmer.email,
@@ -5949,7 +6393,6 @@ router.delete('/yields/:id', async (req, res) => {
 
 
 
-
 // GET a specific farmer by ID
 router.get('/farmers/:id', authenticate, async (req, res) => {
   try {
@@ -5958,7 +6401,7 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
     // Validate farmer ID
     if (!farmerId || isNaN(farmerId)) {
       return res.status(400).json({
-        success: false,
+        success: false, 
         message: 'Invalid farmer ID'
       });
     }
@@ -5967,9 +6410,14 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
       SELECT 
         f.*,
         s.sector_name as sector,
-        s.sector_id as sectorId
+        s.sector_id as sectorId,
+        a.name as association_name,
+        a.id as association_id,
+        u.status as accountStatus
       FROM farmers f
       LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+      LEFT JOIN associations a ON f.assoc_id = a.id
+      LEFT JOIN users u ON f.user_id = u.id
       WHERE f.id = ?
     `, [farmerId]);
 
@@ -6014,7 +6462,9 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
         mother_maiden_name: farmer.mother_maiden_name || null,
         person_to_notify: farmer.person_to_notify || null,
         ptn_contact: farmer.ptn_contact || null,
-        ptn_relationship: farmer.ptn_relationship || null
+        ptn_relationship: farmer.ptn_relationship || null,
+        association: farmer.association_name || null,
+        accountStatus: farmer.accountStatus || null // Added user status from users table
       }
     });
 
@@ -6049,7 +6499,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       imageUrl,
       farm_name,
       total_land_area,
-      sex, // Added missing sex field
+      sex,
       house_hold_head,
       civil_status,
       spouse_name,
@@ -6060,7 +6510,9 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       mother_maiden_name,
       person_to_notify,
       ptn_contact,
-      ptn_relationship
+      ptn_relationship,
+      accountStatus,
+      association
     } = req.body;
 
     // Validate required fields
@@ -6072,9 +6524,18 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       });
     }
 
-    // Check if farmer exists
+    // Parse association ID if provided
+    let assocId = null;
+    if (association && association !== 'N/A') {
+      const parts = association.split(':');
+      if (parts.length > 0) {
+        assocId = parseInt(parts[0].trim()) || null;
+      }
+    }
+
+    // Check if farmer exists and get user_id
     const [farmerCheck] = await pool.query(
-      'SELECT id FROM farmers WHERE id = ?',
+      'SELECT id, user_id FROM farmers WHERE id = ?',
       [farmerId]
     );
 
@@ -6088,6 +6549,8 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         }
       });
     }
+
+    const userId = farmerCheck[0].user_id;
 
     // Check if email is being used by another farmer
     const [emailCheck] = await pool.query(
@@ -6123,6 +6586,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         address = ?,
         barangay = ?,
         sector_id = ?,
+        assoc_id = ?,
         imageUrl = ?,
         farm_name = ?,
         total_land_area = ?,
@@ -6151,6 +6615,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         address || null,
         barangay,
         sectorId,
+        assocId,
         imageUrl || null,
         farm_name || null,
         total_land_area || null,
@@ -6169,14 +6634,27 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       ]
     );
 
-    // Get the updated farmer with sector name
+   // Update user status if accountStatus is provided and user exists
+if (accountStatus && userId) {
+  await pool.query(
+    'UPDATE users SET status = ? WHERE id = ?',  // Added WHERE clause
+    [accountStatus, userId]
+  );
+}
+
+    // Get the updated farmer with sector, association, and user info
     const [updatedFarmer] = await pool.query(
       `SELECT 
         f.*,
         s.sector_name as sector,
-        s.sector_id as sectorId
+        s.sector_id as sectorId,
+        a.name as association_name,
+        a.id as association_id,
+        u.status as user_status
       FROM farmers f
       LEFT JOIN sectors s ON f.sector_id = s.sector_id 
+      LEFT JOIN associations a ON f.assoc_id = a.id
+      LEFT JOIN users u ON f.user_id = u.id
       WHERE f.id = ?`,
       [farmerId]
     );
@@ -6190,7 +6668,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         firstname: farmer.firstname,
         middlename: farmer.middlename || null,
         surname: farmer.surname || null,
-        sex: farmer.sex || null, // Added sex to response
+        sex: farmer.sex || null,
         extension: farmer.extension || null,
         name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
         email: farmer.email,
@@ -6215,7 +6693,11 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         mother_maiden_name: farmer.mother_maiden_name || null,
         person_to_notify: farmer.person_to_notify || null,
         ptn_contact: farmer.ptn_contact || null,
-        ptn_relationship: farmer.ptn_relationship || null
+        ptn_relationship: farmer.ptn_relationship || null,
+        association: farmer.association_id ? 
+          `${farmer.association_id}: ${farmer.association_name}` : null,
+        associationId: farmer.association_id || null,
+        user_status: farmer.user_status || null
       }
     });
 
@@ -6232,8 +6714,6 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
-
-
 // DELETE farmer
 router.delete('/farmers/:id', authenticate, async (req, res) => {
   try {
@@ -6288,50 +6768,7 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
 
 
 
-
-
-router.get('/users', authenticate, async (req, res) => {
-  try {
-    const [users] = await pool.query(`
-      SELECT 
-        u.id,
-        u.email,
-        u.role,
-        u.created_at,
-        u.fname as firstname,
-        u.lname as surname,
-        u.contact as phone,
-        u.status,
-        s.sector_name as sector,
-        s.sector_id as sectorId
-      FROM users u
-      LEFT JOIN sectors s ON u.sector_id = s.sector_id 
-      ORDER BY u.created_at DESC
-    `);
-
-    res.json({
-      success: true,
-      users: users.map(user => ({
-        id: user.id,
-        fullName: {
-          firstname: user.firstname,
-          surname: user.surname
-        },
-        name: `${user.firstname}${user.surname ? ' ' + user.surname : ''}` || '---',
-        email: user.email || '---',
-        phone: user.phone,
-        role: user.role,
-        status: user.status || 'Active',
-        sector: user.sector,
-        sectorId: user.sectorId || null,
-        createdAt: user.created_at
-      }))
-    });
-  } catch (error) {
-    console.error('Failed to fetch users:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch users' });
-  }
-});
+ 
 
 router.get('/user-statistics', async (req, res) => {
   try {
