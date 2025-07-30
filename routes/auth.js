@@ -200,34 +200,7 @@ router.get('/associations', async (req, res) => {
   }
 });
  
-
-// Get all associations
-// router.get('/associations', authenticate, async (req, res) => {
-//   try {
-//     const [associations] = await pool.query(`
-//       SELECT 
-//         id, 
-//         name, 
-//         description ,
-//         created_at AS createdAt,
-//         updated_at AS updatedAt
-//       FROM associations
-//       ORDER BY created_at DESC
-//     `);
-
-//     res.json({
-//       success: true,
-//       associations
-//     });
-//   } catch (error) {
-//     console.error('Failed to fetch associations:', error);
-//     res.status(500).json({ 
-//       success: false, 
-//       message: 'Failed to fetch associations' 
-//     });
-//   }
-// });
-
+ 
 // Create new association
 router.post('/associations', authenticate, async (req, res) => {
   const { name, description } = req.body;
@@ -267,7 +240,7 @@ router.post('/associations', authenticate, async (req, res) => {
 // Update association
 router.put('/associations/:id', authenticate, async (req, res) => {
   const { id } = req.params;
-  const { name, desc } = req.body;
+  const { name, description } = req.body;
 
   if (!name) {
     return res.status(400).json({ 
@@ -279,7 +252,7 @@ router.put('/associations/:id', authenticate, async (req, res) => {
   try {
     await pool.query(
       'UPDATE associations SET name = ?, description = ? WHERE id = ?',
-      [name, desc, id]
+      [name, description, id]
     );
 
     const [updatedAssociation] = await pool.query(
@@ -1431,8 +1404,8 @@ router.post('/register-farmer', async (req, res) => {
       (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, 
        sex, civil_status, spouse_name, house_hold_head, household_num, 
        male_members_num, female_members_num, mother_maiden_name, religion, address, 
-       person_to_notify, ptn_contact, ptn_relationship, sector_id, assoc_id, created_at, updated_at) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+       person_to_notify, ptn_contact, ptn_relationship, sector_id, assoc_id, imgUrl, created_at, updated_at) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         mysqlUserInsertResult.insertId,
         name,
@@ -1457,7 +1430,8 @@ router.post('/register-farmer', async (req, res) => {
         ptnContact || null,
         ptnRelationship || null,
         extractSectorId(sector),
-        extractId(association), // Extracted association ID
+        extractId(association),
+        'https://res.cloudinary.com/dk41ykxsq/image/upload/v1749288962/testUpload/law0n3hfrlptwi9qsvl7.png', // Default image URL
       ]
     );
     // 7. Get the complete farmer record with user info
@@ -1564,10 +1538,6 @@ router.post('/register-farmer', async (req, res) => {
     });
   }
 });
-
-
-
-
 
 
 
@@ -3815,37 +3785,39 @@ router.get('/farmer-yield-distribution', async (req, res) => {
 
 
 
-router.get('/farms', async (req, res) => {
+router.get('/farms-view', async (req, res) => {
   try {
     // Get farmerId from query parameters if it exists
     const { farmerId } = req.query;
 
     // Base query
-    let farmQuery = `
-      SELECT 
-        f.farm_id,
-        f.vertices,
-        f.farm_name,
-        f.farmer_id,
-        f.products,
-        f.area,
-        f.description,
-        f.sector_id, 
-        f.parentBarangay,
-        s.sector_name,
-        fr.name as farmer_name
-      FROM farms f
-      JOIN sectors s ON f.sector_id = s.sector_id
-      JOIN farmers fr ON f.farmer_id = fr.id
-    `;
+let farmQuery = `
+SELECT 
+  f.farm_id,
+  f.vertices,
+  f.farm_name,
+  f.farmer_id,
+  f.products,
+  f.area,
+  f.description,
+  f.sector_id, 
+  f.parentBarangay,
+  f.status,   
+  s.sector_name,
+  fr.name as farmer_name
+FROM farms f
+JOIN sectors s ON f.sector_id = s.sector_id
+JOIN farmers fr ON f.farmer_id = fr.id
+WHERE f.status = 'Active'  
+`;
 
-    // Add WHERE clause if farmerId is provided
-    if (farmerId) {
-      farmQuery += ` WHERE f.farmer_id = ${pool.escape(farmerId)}`;
-    }
+// Add additional WHERE clause if farmerId is provided
+if (farmerId) {
+farmQuery += ` AND f.farmer_id = ${pool.escape(farmerId)}`;
+}
 
-    // Add ordering
-    farmQuery += ` ORDER BY f.farm_name ASC`;
+// Add ordering
+farmQuery += ` ORDER BY f.farm_name ASC`;
 
     const [farms] = await pool.query(farmQuery);
 
@@ -3906,6 +3878,105 @@ router.get('/farms', async (req, res) => {
     });
   }
 });
+
+
+
+router.get('/farms', async (req, res) => {
+  try {
+    // Get farmerId from query parameters if it exists
+    const { farmerId } = req.query;
+
+    // Base query
+    let farmQuery = `
+      SELECT 
+        f.farm_id,
+        f.vertices,
+        f.farm_name,
+        f.farmer_id,
+        f.products,
+        f.area,
+        f.description,
+        f.status,
+        f.sector_id, 
+        f.parentBarangay,
+        s.sector_name,
+        fr.name as farmer_name
+      FROM farms f
+      JOIN sectors s ON f.sector_id = s.sector_id
+      JOIN farmers fr ON f.farmer_id = fr.id
+    `;
+
+    // Add WHERE clause if farmerId is provided
+    if (farmerId) {
+      farmQuery += ` WHERE f.farmer_id = ${pool.escape(farmerId)}`;
+    }
+
+    // Add ordering
+    farmQuery += ` ORDER BY f.farm_name ASC`;
+
+    const [farms] = await pool.query(farmQuery);
+
+    // Get all products to create a mapping
+    const [products] = await pool.query('SELECT id, name FROM farm_products');
+    const productMap = {};
+    products.forEach(product => {
+      productMap[product.id] = product.name;
+    });
+
+    // Process farms to include product names with IDs
+    const processedFarms = farms.map(farm => {
+      let productEntries = [];
+      try {
+        // Parse the products JSON array if it exists
+        const productIds = JSON.parse(farm.products || '[]');
+        productEntries = productIds.map(id => {
+          const productName = productMap[id];
+          return productName ? `${id}: ${productName}` : null;
+        }).filter(Boolean);
+      } catch (e) {
+        console.error('Error parsing products for farm', farm.farm_id, e);
+      }
+
+      return {
+        id: farm.farm_id,
+        vertices: JSON.parse(farm.vertices || '[]'),
+        name: farm.farm_name,
+        farmerId: farm.farmer_id,
+        owner: `${farm.farmer_id}: ${farm.farmer_name}`,
+        farmerName: farm.farmer_name,
+        products: productEntries,
+        color: getSectorColor(farm.sector_id),
+        area: farm.area ? parseFloat(farm.area) : 0,
+        description: farm.description,
+        status:farm.status,
+        sectorId: farm.sector_id,
+        sectorName: farm.sector_name,
+        pinStyle: farm.sector_name,
+        parentBarangay: farm.parentBarangay
+      };
+    });
+
+    res.json({
+      success: true,
+      farms: processedFarms
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farms:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farms',
+      error: {
+        code: 'FARM_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
 
 router.get('/products', authenticate, async (req, res) => {
   try {
@@ -5081,7 +5152,7 @@ router.post('/farms/', async (req, res) => {
       ? vertices.map(([lat, lng]) => ({ lat, lng }))
       : vertices;
 
-    const insertQuery = `
+      const insertQuery = `
       INSERT INTO farms (
         farm_name,
         vertices,
@@ -5091,11 +5162,12 @@ router.post('/farms/', async (req, res) => {
         products,
         area,
         description,
+        status,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Active', NOW(), NOW())
     `;
-
+    
     const [result] = await pool.query(insertQuery, [
       name,
       JSON.stringify(formattedVertices),
@@ -5105,6 +5177,7 @@ router.post('/farms/', async (req, res) => {
       JSON.stringify(products || ["Rice"]),
       area,
       description || null
+      // status is not in the parameters as it's hardcoded as 'Active'
     ]);
 
     // Get the newly created farm
@@ -5282,7 +5355,6 @@ router.put('/farms/:id', async (req, res) => {
   }
 });
 
- 
 router.put('/farmsProfile/:id', async (req, res) => {
   try {
     const farmId = req.params.id;
@@ -5290,21 +5362,20 @@ router.put('/farmsProfile/:id', async (req, res) => {
       name,
       barangay,
       sectorId,
-      farmerId,  // Changed from farmerId to owner
+      farmerId,
       products,
       description,
       pinStyle,
+      status = 'Inactive' // Default to 'Inactive' if not provided
     } = req.body;
 
     // Validate required fields
     if (!name || !sectorId) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name,    or sectorId'
+        message: 'Missing required fields: name or sectorId'
       });
     }
-
-
 
     // Convert products to array of numbers (extract IDs from "id: name" strings)
     const productIds = products
@@ -5323,7 +5394,8 @@ router.put('/farmsProfile/:id', async (req, res) => {
         sector_id = ?,
         farmer_id = ?,
         products = ?, 
-        description = ?,
+        description = ?, 
+        status = ?,
         updated_at = NOW()
       WHERE farm_id = ?
     `;
@@ -5335,48 +5407,81 @@ router.put('/farmsProfile/:id', async (req, res) => {
       farmerId || null,
       JSON.stringify(productIds),
       description || null,
+      status, // Use the provided status or default
       farmId
     ]);
 
-    // Get the updated farm with product names
-    // Modified query to work with MariaDB
-    const [farm] = await pool.query(`
+    // Get the updated farm with the same structure as the GET endpoint
+    const farmQuery = `
       SELECT 
-        f.*,
+        f.farm_id,
+        f.vertices,
+        f.farm_name,
+        f.farmer_id,
+        f.products,
+        f.area,
+        f.description,
+        f.sector_id, 
+        f.parentBarangay,
         s.sector_name,
-        (
-          SELECT GROUP_CONCAT(p.name)
-          FROM farm_products p
-          WHERE FIND_IN_SET(p.id, REPLACE(REPLACE(REPLACE(f.products, '[', ''), ']', ''), ' ', ''))
-        ) as product_names
+        fr.name as farmer_name,
+        f.status
       FROM farms f
       JOIN sectors s ON f.sector_id = s.sector_id
+      JOIN farmers fr ON f.farmer_id = fr.id
       WHERE f.farm_id = ?
-    `, [farmId]);
+      LIMIT 1
+    `;
 
-    if (farm.length === 0) {
+    const [farms] = await pool.query(farmQuery, [farmId]);
+
+    if (farms.length === 0) {
       throw new Error('Farm not found');
     }
 
-    const updatedFarm = farm[0];
-    const productNames = updatedFarm.product_names
-      ? updatedFarm.product_names.split(',')
-      : [];
+    const farm = farms[0];
+
+    // Get all products to create a mapping
+    const [productsData] = await pool.query('SELECT id, name FROM farm_products');
+    const productMap = {};
+    productsData.forEach(product => {
+      productMap[product.id] = product.name;
+    });
+
+    // Process the farm to include product names with IDs
+    let productEntries = [];
+    try {
+      // Parse the products JSON array if it exists
+      const productIds = JSON.parse(farm.products || '[]');
+      productEntries = productIds.map(id => {
+        const productName = productMap[id];
+        return productName ? `${id}: ${productName}` : null;
+      }).filter(Boolean);
+    } catch (e) {
+      console.error('Error parsing products for farm', farm.farm_id, e);
+    }
+
+    const processedFarm = {
+      id: farm.farm_id,
+      vertices: JSON.parse(farm.vertices || '[]'),
+      name: farm.farm_name,
+      farmerId: farm.farmer_id,
+      owner: `${farm.farmer_id}: ${farm.farmer_name}`,
+      farmerName: farm.farmer_name,
+      products: productEntries,
+      color: getSectorColor(farm.sector_id),
+      area: farm.area ? parseFloat(farm.area) : 0,
+      description: farm.description,
+      sectorId: farm.sector_id,
+      sectorName: farm.sector_name,
+      pinStyle: pinStyle || farm.sector_name.toLowerCase(),
+      parentBarangay: farm.parentBarangay,
+      status: farm.status // Include the status in the response
+    };
 
     res.json({
       success: true,
-      farm: {
-        id: updatedFarm.farm_id,
-        name: updatedFarm.farm_name,
-        farmerId: updatedFarm.farmer_id,
-        products: productNames, // Return only product names
-        color: getSectorColor(updatedFarm.sector_id),
-        description: updatedFarm.description,
-        sectorId: updatedFarm.sector_id,
-        sectorName: updatedFarm.sector_name,
-        pinStyle: pinStyle || updatedFarm.sector_name.toLowerCase(),
-        parentBarangay: updatedFarm.parentBarangay
-      }
+      farm: processedFarm
     });
 
   } catch (error) {
@@ -5392,8 +5497,7 @@ router.put('/farmsProfile/:id', async (req, res) => {
     });
   }
 });
-
-
+  
 
 
 router.get('/farms/:id', async (req, res) => {
@@ -5407,6 +5511,7 @@ router.get('/farms/:id', async (req, res) => {
         f.vertices,
         f.farm_name,
         f.farmer_id,
+        f.status,
         f.products,
         f.area,
         f.description,
@@ -5465,6 +5570,7 @@ router.get('/farms/:id', async (req, res) => {
       description: farm.description,
       sectorId: farm.sector_id,
       sectorName: farm.sector_name,
+      status:farm.status,
       pinStyle: farm.sector_name.toLowerCase(),
       parentBarangay: farm.parentBarangay
     };
