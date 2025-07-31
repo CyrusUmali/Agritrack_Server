@@ -2537,6 +2537,15 @@ router.get('/farmers-report', async (req, res) => {
   try {
     const { barangay, sector, association } = req.query; // Added association parameter
 
+
+    const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
+
+    
+    // Parse count parameter - if it's a number use it, otherwise return all
+    const count = countParam === 'all' ? null : parseInt(countParam);
+    const limitCount = Number.isInteger(count) && count > 0 ? count : null;
+
+
     // Base query with optional filters
     let query = `
       SELECT 
@@ -2589,6 +2598,13 @@ router.get('/farmers-report', async (req, res) => {
 
     query += ' GROUP BY f.id';
 
+
+         // Add LIMIT clause if count is specified
+         if (limitCount !== null) {
+          query += ' LIMIT ?';
+          params.push(limitCount);
+        }
+
     const [farmers] = await pool.query(query, params);
 
     // Format the response
@@ -2609,7 +2625,8 @@ router.get('/farmers-report', async (req, res) => {
       filters: {
         barangay: barangay || 'all',
         sector: sector || 'all',
-        association: association || 'all' // Added association to filters
+        association: association || 'all',
+         count: limitCount !== null ? limitCount : 'all'
       },
       count: responseData.length,
       farmers: responseData
@@ -2638,6 +2655,16 @@ router.get('/barangay-yields-report', async (req, res) => {
 
     // Other params
     const { startDate, endDate, viewBy } = req.query;
+
+
+    const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
+
+    
+    // Parse count parameter - if it's a number use it, otherwise return all
+    const count = countParam === 'all' ? null : parseInt(countParam);
+    const limitCount = Number.isInteger(count) && count > 0 ? count : null;
+
+
 
     // Validate date range
     const dateRangeValid = startDate && endDate && startDate !== endDate;
@@ -2730,6 +2757,10 @@ router.get('/barangay-yields-report', async (req, res) => {
       `;
     }
 
+
+   
+
+
     const [barangays] = await pool.query('SELECT name FROM barangay ORDER BY name');
 
     query = `
@@ -2781,6 +2812,16 @@ router.get('/barangay-yields-report', async (req, res) => {
     } else {
       query += 'barangay_name, fy.harvest_date DESC';
     }
+
+
+
+          // Add LIMIT clause if count is specified
+          if (limitCount !== null) {
+            query += ' LIMIT ?';
+            params.push(limitCount);
+          }
+
+
 
     const [yields] = await pool.query(query, params);
 
@@ -2851,7 +2892,8 @@ router.get('/barangay-yields-report', async (req, res) => {
         sectorId: sectorId || 'all',
         startDate: dateRangeValid ? startDate : 'all',
         endDate: dateRangeValid ? endDate : 'all',
-        viewBy: viewBy || 'individual'
+        viewBy: viewBy || 'individual',
+         count: limitCount !== null ? limitCount : 'all'
       },
       count: formattedYields.length,
       yields: formattedYields
@@ -2876,6 +2918,16 @@ router.get('/sector-yields-report', async (req, res) => {
   try {
     // Extract and clean the sector ID
     const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
+
+
+
+    const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
+
+    
+    // Parse count parameter - if it's a number use it, otherwise return all
+    const count = countParam === 'all' ? null : parseInt(countParam);
+    const limitCount = Number.isInteger(count) && count > 0 ? count : null;
+
 
     // Other params
     const { startDate, endDate, viewBy } = req.query;
@@ -2941,6 +2993,8 @@ router.get('/sector-yields-report', async (req, res) => {
       `;
     }
 
+
+
     const [sectors] = await pool.query('SELECT sector_id, sector_name FROM sectors ORDER BY sector_name');
 
     query = `
@@ -2981,6 +3035,13 @@ router.get('/sector-yields-report', async (req, res) => {
     } else {
       query += 'sector_name, fy.harvest_date DESC';
     }
+
+
+      // Add LIMIT clause if count is specified
+      if (limitCount !== null) {
+        query += ' LIMIT ?';
+        params.push(limitCount);
+      }
 
     const [yields] = await pool.query(query, params);
 
@@ -3053,7 +3114,8 @@ router.get('/sector-yields-report', async (req, res) => {
         sectorId: sectorId || 'all',
         startDate: dateRangeValid ? startDate : 'all',
         endDate: dateRangeValid ? endDate : 'all',
-        viewBy: viewBy || 'individual'
+        viewBy: viewBy || 'individual',
+                  count: limitCount !== null ? limitCount : 'all'
       },
       count: formattedYields.length,
       yields: formattedYields
@@ -3080,12 +3142,19 @@ router.get('/farmer-yields-report', async (req, res) => {
     const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null;
     const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
     const associationId = req.query.associationId ? req.query.associationId.split(':')[0].trim() : null; // Added association filter
+    const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
+
+    const count = countParam === 'all' ? null : parseInt(countParam);
+    const limitCount = Number.isInteger(count) && count > 0 ? count : null;
 
     // Other params
+
     const { startDate, endDate, viewBy } = req.query;
 
     // Validate date range
     const dateRangeValid = startDate && endDate && startDate !== endDate;
+
+    
 
     // Base query with optional filters
     let query = `
@@ -3215,6 +3284,14 @@ router.get('/farmer-yields-report', async (req, res) => {
       query += ' ORDER BY fy.harvest_date DESC, farmer_name, product_name, association_name';
     }
 
+     // Add LIMIT clause if count is specified
+     if (limitCount !== null) {
+      query += ' LIMIT ?';
+      params.push(limitCount);
+    }
+
+    
+
     const [yields] = await pool.query(query, params);
 
     // Format response
@@ -3272,7 +3349,8 @@ router.get('/farmer-yields-report', async (req, res) => {
         associationId: associationId || 'all',
         startDate: dateRangeValid ? startDate : 'all',
         endDate: dateRangeValid ? endDate : 'all',
-        viewBy: viewBy || 'individual'
+        viewBy: viewBy || 'individual',
+          count: limitCount !== null ? limitCount : 'all'
       },
       count: formattedYields.length,
       yields: formattedYields
@@ -3293,18 +3371,24 @@ router.get('/farmer-yields-report', async (req, res) => {
 });
 
 
+
 router.get('/product-yields-report', async (req, res) => {
   try {
     // Extract and clean the IDs (keep only the numeric part)
     const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
     const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
-    const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null; // Added barangay filter
+    const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null;
+    const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
 
     // Other params
     const { startDate, endDate, viewBy } = req.query;
 
     // Validate date range
     const dateRangeValid = startDate && endDate && startDate !== endDate;
+
+    // Parse count parameter - if it's a number use it, otherwise return all
+    const count = countParam === 'all' ? null : parseInt(countParam);
+    const limitCount = Number.isInteger(count) && count > 0 ? count : null;
 
     let query;
     let groupBy = '';
@@ -3368,8 +3452,8 @@ router.get('/product-yields-report', async (req, res) => {
       FROM farmer_yield fy
       JOIN farm_products p ON fy.product_id = p.id
       LEFT JOIN sectors s ON p.sector_id = s.sector_id
-      JOIN farms farm ON fy.farm_id = farm.farm_id  /* Added join to farms table */
-      JOIN barangay b ON farm.parentBarangay = b.name  /* Added join to barangay table */
+      JOIN farms farm ON fy.farm_id = farm.farm_id
+      JOIN barangay b ON farm.parentBarangay = b.name
       WHERE 1=1
     `;
 
@@ -3386,13 +3470,11 @@ router.get('/product-yields-report', async (req, res) => {
       params.push(sectorId);
     }
 
-    // Add barangay filter
     if (barangayName && barangayName !== 'all') {
       conditions.push('b.name = ?');
       params.push(barangayName);
     }
 
-    // Add date range filter if valid
     if (dateRangeValid) {
       conditions.push('fy.harvest_date BETWEEN ? AND ?');
       params.push(startDate, endDate);
@@ -3404,13 +3486,18 @@ router.get('/product-yields-report', async (req, res) => {
 
     query += ` ${groupBy} ORDER BY `;
 
-    // Adjust ordering based on viewBy
     if (viewBy === 'Monthly') {
       query += 'month_year DESC, product_name, sector_name';
     } else if (viewBy === 'Yearly') {
       query += 'year DESC, product_name, sector_name';
     } else {
       query += 'fy.harvest_date DESC, product_name, sector_name';
+    }
+
+    // Add LIMIT clause if count is specified
+    if (limitCount !== null) {
+      query += ' LIMIT ?';
+      params.push(limitCount);
     }
 
     const [yields] = await pool.query(query, params);
@@ -3486,10 +3573,11 @@ router.get('/product-yields-report', async (req, res) => {
       filters: {
         productId: productId || 'all',
         sectorId: sectorId || 'all',
-        barangayName: barangayName || 'all', // Added to response
+        barangayName: barangayName || 'all',
         startDate: dateRangeValid ? startDate : 'all',
         endDate: dateRangeValid ? endDate : 'all',
-        viewBy: viewBy || 'individual'
+        viewBy: viewBy || 'individual',
+        count: limitCount !== null ? limitCount : 'all'
       },
       count: formattedYields.length,
       yields: formattedYields
@@ -3508,6 +3596,9 @@ router.get('/product-yields-report', async (req, res) => {
     });
   }
 });
+
+
+
 
 
 router.get('/yield-distribution', async (req, res) => {
@@ -5906,6 +5997,194 @@ router.post('/yields', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to create yield',
+      error: error.message
+    });
+  }
+});
+
+
+
+
+
+
+// Generate multiple yield records with random data
+router.post('/yields/generate', async (req, res) => {
+  try {
+    const { farmer_id, farm_id, product_id, year, count = 20 } = req.body;
+
+    if (!farmer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Farmer ID is required'
+      });
+    }
+
+    // First verify the farmer exists
+    const [farmers] = await pool.query('SELECT id FROM farmers WHERE id = ?', [farmer_id]);
+    if (farmers.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Farmer not found'
+      });
+    }
+
+    // Base query to get farms owned by this farmer and their sectors
+    let query = `
+      SELECT f.farm_id, f.products, f.sector_id, s.sector_name 
+      FROM farms f
+      LEFT JOIN sectors s ON f.sector_id = s.sector_id
+      WHERE f.farmer_id = ?
+    `;
+    const params = [farmer_id];
+
+    // Add farm filter if provided
+    if (farm_id) {
+      query += ' AND f.farm_id = ?';
+      params.push(farm_id);
+    }
+
+    const [farms] = await pool.query(query, params);
+
+    if (farms.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No farms found for this farmer matching the criteria'
+      });
+    }
+
+    // Get products for each sector
+    const sectorProducts = {};
+    const [products] = await pool.query('SELECT id, name, sector_id FROM farm_products');
+    
+    products.forEach(product => {
+      if (!sectorProducts[product.sector_id]) {
+        sectorProducts[product.sector_id] = [];
+      }
+      sectorProducts[product.sector_id].push(product);
+    });
+
+    const generatedYields = [];
+    const currentYear = new Date().getFullYear();
+    
+    for (const farm of farms) {
+      // Get products for this farm's sector
+      const availableProducts = sectorProducts[farm.sector_id] || [];
+      if (availableProducts.length === 0) continue;
+
+      // Parse farm's existing products
+      let farmProducts = [];
+      try {
+        farmProducts = JSON.parse(farm.products || '[]');
+      } catch (e) {
+        console.error('Error parsing farm products:', e);
+      }
+
+      for (let i = 0; i < count; i++) {
+        // Randomly select a product from the sector
+        const randomProduct = availableProducts[Math.floor(Math.random() * availableProducts.length)];
+        
+        // If product_id was specified, verify it's available for this farm's sector
+        const selectedProductId = product_id || randomProduct.id;
+        
+        if (product_id) {
+          const productValid = availableProducts.some(p => p.id === product_id);
+          if (!productValid) {
+            console.log(`Skipping - Product ${product_id} not available for farm ${farm.farm_id}'s sector`);
+            continue;
+          }
+        }
+
+        // Generate random data
+        const harvestDate = new Date(
+          year || currentYear - Math.floor(Math.random() * 3), // Current year or up to 3 years back
+          Math.floor(Math.random() * 12), // Random month
+          Math.floor(Math.random() * 28) + 1 // Random day (1-28)
+        ).toISOString().split('T')[0];
+
+        const volume = (Math.random() * 1000).toFixed(2); // 0-1000 with 2 decimal places
+        const value = (volume * (5 + Math.random() * 20)).toFixed(2); // Random price per unit
+        // const statuses = ['Pending', 'Approved', 'Rejected'];
+        const status = 'Accepted';
+        
+        const notes = Math.random() > 0.7 ? 
+          ['Excellent harvest', 'Good quality', 'Average yield', 'Some pest damage'][Math.floor(Math.random() * 4)] : 
+          null;
+
+        // Check if product needs to be added to farm
+        if (!farmProducts.includes(selectedProductId)) {
+          farmProducts.push(selectedProductId);
+          await pool.query(
+            'UPDATE farms SET products = ? WHERE farm_id = ?',
+            [JSON.stringify(farmProducts), farm.farm_id]
+          );
+        }
+
+        // Create the yield record
+        const [result] = await pool.query(
+          `INSERT INTO farmer_yield 
+           (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            farmer_id,
+            selectedProductId,
+            harvestDate,
+            farm.farm_id,
+            volume,
+            notes,
+            value,
+            JSON.stringify([]), // Empty images array
+            status
+          ]
+        );
+
+        // Get the created record with joins
+        const [yields] = await pool.query(
+          `SELECT 
+            fy.*,
+            f.firstname,
+            f.middlename,
+            f.surname,
+            f.extension,
+            p.name as product_name,
+            p.sector_id,
+            s.sector_name
+           FROM farmer_yield fy
+           LEFT JOIN farmers f ON fy.farmer_id = f.id
+           LEFT JOIN farm_products p ON fy.product_id = p.id
+           LEFT JOIN sectors s ON p.sector_id = s.sector_id
+           WHERE fy.id = ?`,
+          [result.insertId]
+        );
+
+        const yieldItem = yields[0];
+        generatedYields.push({
+          id: yieldItem.id,
+          farmerId: yieldItem.farmer_id,
+          farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+          productId: yieldItem.product_id,
+          productName: yieldItem.product_name,
+          harvestDate: yieldItem.harvest_date,
+          farmId: yieldItem.farm_id,
+          volume: parseFloat(yieldItem.volume),
+          notes: yieldItem.notes || null,
+          value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+          status: yieldItem.status || null,
+          sectorId: yieldItem.sector_id,
+          sector: yieldItem.sector_name
+        });
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      count: generatedYields.length,
+      yields: generatedYields
+    });
+  } catch (error) {
+    console.error('Failed to generate yields:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate yields',
       error: error.message
     });
   }
