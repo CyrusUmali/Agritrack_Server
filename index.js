@@ -59,6 +59,19 @@ app.get('/api', (req, res) => {
 const authRoutes = require('./routes/auth.js');
 app.use('/auth', authRoutes);
 
+
+
+
+// Yields routes - CORRECTED VERSION
+const yieldsRoutes = require('./routes/yields.js');
+app.use('/yields', yieldsRoutes);
+
+
+ 
+const reportRoutes = require('./routes/reports.js');
+app.use('/reports', reportRoutes);
+
+
  
 // 404 Handler
 app.use((req, res, next) => {
