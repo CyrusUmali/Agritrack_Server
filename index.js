@@ -1,7 +1,6 @@
 const express = require('express');
 require('dotenv').config();
 const cors = require('cors');
-const path = require('path');
 const axios = require('axios');
 
 const app = express();
@@ -39,15 +38,22 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Simple wake-up call function
-const wakeUpRenderService = () => {
-  console.log('Attempting to wake up aicrop service...');
-  axios.get('https://aicrop.onrender.com/api/v1', { 
-    timeout: 10000 // 10 second timeout
-  })
-  .then(() => console.log('Wake-up call succeeded (or service was already awake)'))
-  .catch(() => console.log('Wake-up call failed (silent) - service may be cold starting'));
+// Function to ping Aicrop service
+const pingAicropService = async () => {
+  try {
+    console.log('Pinging Aicrop service to keep it awake...');
+    await axios.get('https://aicrop.onrender.com/api/v1', { 
+      timeout: 10000 // 10 second timeout
+    });
+    console.log('Aicrop service ping successful');
+  } catch (error) {
+    console.log('Aicrop service ping failed (silent) - service may be cold starting');
+  }
 };
+
+// Set up periodic pinging (every 5 minutes)
+const PING_INTERVAL = 13 * 60 * 1000; // 5 minutes in milliseconds
+let pingInterval;
 
 // API route
 app.get('/api', (req, res) => {
@@ -66,17 +72,42 @@ app.use('/yields', yieldsRoutes);
 const reportRoutes = require('./routes/reports.js');
 app.use('/reports', reportRoutes);
 
+// Wake-up endpoint
+app.get('/wakeup', (req, res) => {
+  res.status(200).json({ status: 'awake' });
+  console.log('Wake-up endpoint hit');
+});
+
 // 404 Handler
 app.use((req, res, next) => {
   res.status(404).json({ message: 'Not Found' });
 });
 
-// Start server with wake-up call
-app.listen(3001, '0.0.0.0', () => {
+// Start server with periodic pinging
+const server = app.listen(3001, '0.0.0.0', () => {
   console.log(`Server running here:
   - http://localhost:3001
   - http://192.168.56.1:3001`);
   
-  // Trigger wake-up call in background
-  wakeUpRenderService();
+  // Start periodic pinging
+  pingInterval = setInterval(pingAicropService, PING_INTERVAL);
+  
+  // Initial ping 
+setTimeout(pingAicropService, 15000); // Wait 15s after server start
+
+});
+
+// Clean up interval when server stops
+process.on('SIGTERM', () => {
+  clearInterval(pingInterval);
+  server.close(() => {
+    console.log('Server terminated');
+  });
+});
+
+process.on('SIGINT', () => {
+  clearInterval(pingInterval);
+  server.close(() => {
+    console.log('Server terminated');
+  });
 });
