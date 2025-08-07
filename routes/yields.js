@@ -1,0 +1,1235 @@
+// yieldsRoutes.js
+const express = require('express');
+const router = express.Router();
+const authenticate = require('../middleware/firebase-auth-middleware');
+const admin = require('firebase-admin');
+const pool = require('../connect');
+
+
+
+
+
+
+
+router.get('/yields/:id', async (req, res) => {
+    try {
+        const [yields] = await pool.query(
+            `SELECT 
+          fy.*,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+          p.sector_id,
+          s.sector_name
+         FROM farmer_yield fy
+         LEFT JOIN farmers f ON fy.farmer_id = f.id
+         LEFT JOIN farm_products p ON fy.product_id = p.id
+         LEFT JOIN sectors s ON p.sector_id = s.sector_id
+         WHERE fy.id = ?`,
+            [req.params.id]
+        );
+
+        if (yields.length === 0) {
+            return res.status(404).json({ success: false, message: 'Yield not found' });
+        }
+
+        const yieldItem = yields[0];
+        res.json({
+            success: true,
+            yield: {
+
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy'
+            }
+        });
+    } catch (error) {
+        console.error('Failed to fetch yield:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch yield' });
+    }
+});
+
+router.put('/yields/:id', async (req, res) => {
+    try {
+        const {
+            farmer_id,
+            product_id,
+            harvest_date,
+            farm_id,
+            volume,
+            notes,
+            value,
+            images,
+            status
+        } = req.body;
+
+        // Convert ISO date to MySQL compatible format
+        const mysqlHarvestDate = harvest_date ? new Date(harvest_date).toISOString().slice(0, 19).replace('T', ' ') : null;
+
+        await pool.query(
+            `UPDATE farmer_yield 
+         SET 
+           farmer_id = ?, 
+           product_id = ?, 
+           harvest_date = ?, 
+           farm_id = ?, 
+           volume = ?, 
+           notes = ?, 
+           Value = ?, 
+           images = ?, 
+           status = ?,
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+            [
+                farmer_id,
+                product_id,
+                mysqlHarvestDate,  // Use the converted date here
+                farm_id,
+                volume,
+                notes,
+                value,
+                JSON.stringify(images),
+                status,
+                req.params.id
+            ]
+        );
+
+        // Rest of your code remains the same...
+        const [yields] = await pool.query(
+            `SELECT 
+          fy.*,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+          p.sector_id,
+          s.sector_name
+         FROM farmer_yield fy
+         LEFT JOIN farmers f ON fy.farmer_id = f.id
+         LEFT JOIN farm_products p ON fy.product_id = p.id
+         LEFT JOIN sectors s ON p.sector_id = s.sector_id
+         WHERE fy.id = ?`,
+            [req.params.id]
+        );
+
+        if (yields.length === 0) {
+            return res.status(404).json({ success: false, message: 'Yield not found' });
+        }
+
+        const yieldItem = yields[0];
+        res.json({
+            success: true,
+            yield: {
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy'
+            }
+        });
+    } catch (error) {
+        console.error('Failed to update yield:', error);
+        res.status(500).json({ success: false, message: 'Failed to update yield' });
+    }
+});
+
+// Delete a yield record
+router.delete('/yields/:id', async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            'DELETE FROM farmer_yield WHERE id = ?',
+            [req.params.id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: 'Yield not found' });
+        }
+
+        res.json({ success: true, message: 'Yield deleted successfully' });
+    } catch (error) {
+        console.error('Failed to delete yield:', error);
+        res.status(500).json({ success: false, message: 'Failed to delete yield' });
+    }
+});
+
+
+
+router.get('/yields/product/:productId', async (req, res) => {
+    const { productId } = req.params;
+
+    try {
+        const [yields] = await pool.query(`
+        SELECT 
+          fy.id,
+          fy.farmer_id,
+          fy.product_id,
+          fy.harvest_date,
+          fy.created_at,
+          fy.updated_at,
+          fy.farm_id,
+          fy.volume,
+          fy.notes,
+          fy.Value,
+          fy.images,
+          fy.status,
+          f.barangay,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+          p.sector_id,
+          s.sector_name,
+          farm.area as farm_area
+        FROM farmer_yield fy
+        LEFT JOIN farmers f ON fy.farmer_id = f.id
+        LEFT JOIN farm_products p ON fy.product_id = p.id
+        LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+        LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+        WHERE fy.product_id = ?
+        ORDER BY fy.harvest_date DESC
+      `, [productId]);
+
+        res.json({
+            success: true,
+            yields: yields.map(yieldItem => ({
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                barangay: yieldItem.barangay,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy'
+            }))
+        });
+    } catch (error) {
+        console.error('Failed to fetch yields by product ID:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch yields by product ID',
+            error: {
+                code: 'YIELD_FETCH_BY_PRODUCT_ERROR',
+                details: error.message,
+                sqlMessage: error.sqlMessage
+            }
+        });
+    }
+});
+
+
+
+router.get('/yields/farm/:farmId', async (req, res) => {
+    const { farmId } = req.params;
+
+    try {
+        const [yields] = await pool.query(`
+        SELECT 
+          fy.id,
+          fy.farmer_id,
+          fy.product_id,
+          fy.harvest_date,
+          fy.created_at,
+          fy.updated_at,
+          fy.farm_id,
+          fy.volume,
+          fy.notes,
+          fy.Value,
+          fy.images,
+          fy.status,
+          f.barangay,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+          p.sector_id,
+          p.imgUrl as product_imgUrl,   
+          s.sector_name,
+          farm.area as farm_area,
+          farm.farm_name
+        FROM farmer_yield fy
+        LEFT JOIN farmers f ON fy.farmer_id = f.id
+        LEFT JOIN farm_products p ON fy.product_id = p.id
+        LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+        LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+        WHERE fy.farm_id = ? AND fy.status = 'Accepted'
+        ORDER BY fy.harvest_date DESC
+      `, [farmId]);
+
+        res.json({
+            success: true,
+            yields: yields.map(yieldItem => ({
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                farmName: yieldItem.farm_name,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                productImage: yieldItem.product_imgUrl,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                barangay: yieldItem.barangay,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy'
+            }))
+        });
+    } catch (error) {
+        console.error('Failed to fetch yields by farm ID:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch yields by farm ID',
+            error: {
+                code: 'YIELD_FETCH_BY_FARM_ERROR',
+                details: error.message,
+                sqlMessage: error.sqlMessage
+            }
+        });
+    }
+});
+
+// Generate multiple yield records with random data
+router.post('/yields/generate', async (req, res) => {
+    try {
+        const { farmer_id, farm_id, product_id, year, count = 20 } = req.body;
+
+        if (!farmer_id) {
+            return res.status(400).json({
+                success: false,
+                message: 'Farmer ID is required'
+            });
+        }
+
+        // First verify the farmer exists
+        const [farmers] = await pool.query('SELECT id FROM farmers WHERE id = ?', [farmer_id]);
+        if (farmers.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Farmer not found'
+            });
+        }
+
+        // Base query to get farms owned by this farmer and their sectors
+        let query = `
+        SELECT f.farm_id, f.products, f.sector_id, s.sector_name 
+        FROM farms f
+        LEFT JOIN sectors s ON f.sector_id = s.sector_id
+        WHERE f.farmer_id = ?
+      `;
+        const params = [farmer_id];
+
+        // Add farm filter if provided
+        if (farm_id) {
+            query += ' AND f.farm_id = ?';
+            params.push(farm_id);
+        }
+
+        const [farms] = await pool.query(query, params);
+
+        if (farms.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'No farms found for this farmer matching the criteria'
+            });
+        }
+
+        // Get products for each sector
+        const sectorProducts = {};
+        const [products] = await pool.query('SELECT id, name, sector_id FROM farm_products');
+
+        products.forEach(product => {
+            if (!sectorProducts[product.sector_id]) {
+                sectorProducts[product.sector_id] = [];
+            }
+            sectorProducts[product.sector_id].push(product);
+        });
+
+        const generatedYields = [];
+        const currentYear = new Date().getFullYear();
+
+        for (const farm of farms) {
+            // Get products for this farm's sector
+            const availableProducts = sectorProducts[farm.sector_id] || [];
+            if (availableProducts.length === 0) continue;
+
+            // Parse farm's existing products
+            let farmProducts = [];
+            try {
+                farmProducts = JSON.parse(farm.products || '[]');
+            } catch (e) {
+                console.error('Error parsing farm products:', e);
+            }
+
+            for (let i = 0; i < count; i++) {
+                // Randomly select a product from the sector
+                const randomProduct = availableProducts[Math.floor(Math.random() * availableProducts.length)];
+
+                // If product_id was specified, verify it's available for this farm's sector
+                const selectedProductId = product_id || randomProduct.id;
+
+                if (product_id) {
+                    const productValid = availableProducts.some(p => p.id === product_id);
+                    if (!productValid) {
+                        console.log(`Skipping - Product ${product_id} not available for farm ${farm.farm_id}'s sector`);
+                        continue;
+                    }
+                }
+
+                // Generate random data
+                const harvestDate = new Date(
+                    year || currentYear - Math.floor(Math.random() * 3), // Current year or up to 3 years back
+                    Math.floor(Math.random() * 12), // Random month
+                    Math.floor(Math.random() * 28) + 1 // Random day (1-28)
+                ).toISOString().split('T')[0];
+
+                const volume = (Math.random() * 1000).toFixed(2); // 0-1000 with 2 decimal places
+                const value = (volume * (5 + Math.random() * 20)).toFixed(2); // Random price per unit
+                // const statuses = ['Pending', 'Approved', 'Rejected'];
+                const status = 'Accepted';
+
+                const notes = Math.random() > 0.7 ?
+                    ['Excellent harvest', 'Good quality', 'Average yield', 'Some pest damage'][Math.floor(Math.random() * 4)] :
+                    null;
+
+                // Check if product needs to be added to farm
+                if (!farmProducts.includes(selectedProductId)) {
+                    farmProducts.push(selectedProductId);
+                    await pool.query(
+                        'UPDATE farms SET products = ? WHERE farm_id = ?',
+                        [JSON.stringify(farmProducts), farm.farm_id]
+                    );
+                }
+
+                // Create the yield record
+                const [result] = await pool.query(
+                    `INSERT INTO farmer_yield 
+             (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        farmer_id,
+                        selectedProductId,
+                        harvestDate,
+                        farm.farm_id,
+                        volume,
+                        notes,
+                        value,
+                        JSON.stringify([]), // Empty images array
+                        status
+                    ]
+                );
+
+                // Get the created record with joins
+                const [yields] = await pool.query(
+                    `SELECT 
+              fy.*,
+              f.firstname,
+              f.middlename,
+              f.surname,
+              f.extension,
+              p.name as product_name,
+              p.sector_id,
+              s.sector_name
+             FROM farmer_yield fy
+             LEFT JOIN farmers f ON fy.farmer_id = f.id
+             LEFT JOIN farm_products p ON fy.product_id = p.id
+             LEFT JOIN sectors s ON p.sector_id = s.sector_id
+             WHERE fy.id = ?`,
+                    [result.insertId]
+                );
+
+                const yieldItem = yields[0];
+                generatedYields.push({
+                    id: yieldItem.id,
+                    farmerId: yieldItem.farmer_id,
+                    farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                    productId: yieldItem.product_id,
+                    productName: yieldItem.product_name,
+                    harvestDate: yieldItem.harvest_date,
+                    farmId: yieldItem.farm_id,
+                    volume: parseFloat(yieldItem.volume),
+                    notes: yieldItem.notes || null,
+                    value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                    status: yieldItem.status || null,
+                    sectorId: yieldItem.sector_id,
+                    sector: yieldItem.sector_name
+                });
+            }
+        }
+
+        res.status(201).json({
+            success: true,
+            count: generatedYields.length,
+            yields: generatedYields
+        });
+    } catch (error) {
+        console.error('Failed to generate yields:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to generate yields',
+            error: error.message
+        });
+    }
+});
+
+// Create a new yield record
+router.post('/yields', authenticate, async (req, res) => {
+    try {
+        const {
+            farmer_id,
+            product_id,
+            harvest_date,
+            farm_id,
+            volume,
+            notes,
+            value,
+            images
+        } = req.body;
+
+        // Get the user's role from the authenticated request
+        const userRole = req.user.dbUser.role;
+
+        // Determine the default status based on user role
+        let defaultStatus = 'Pending';
+        if (userRole === 'admin' || userRole === 'Staff') {
+            defaultStatus = 'Accepted';
+        }
+
+        // First, check if the farm already has this product
+        const [farmResult] = await pool.query(
+            'SELECT products FROM farms WHERE farm_id = ?',
+            [farm_id]
+        );
+
+        if (farmResult.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Farm not found'
+            });
+        }
+
+        const farm = farmResult[0];
+        let farmProducts = [];
+
+        try {
+            farmProducts = JSON.parse(farm.products || '[]');
+        } catch (e) {
+            console.error('Error parsing farm products:', e);
+        }
+
+        // Check if product_id exists in farm's products
+        if (!farmProducts.includes(product_id)) {
+            // Add the product_id to the farm's products
+            farmProducts.push(product_id);
+
+            // Update the farm record
+            await pool.query(
+                'UPDATE farms SET products = ? WHERE farm_id = ?',
+                [JSON.stringify(farmProducts), farm_id]
+            );
+        }
+
+        // Proceed with creating the yield record
+        const [result] = await pool.query(
+            `INSERT INTO farmer_yield 
+         (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                farmer_id,
+                product_id,
+                harvest_date,
+                farm_id,
+                volume,
+                notes,
+                value,
+                JSON.stringify(images),
+                defaultStatus  // Use the determined default status
+            ]
+        );
+
+        // Get the newly created yield record
+        const [yields] = await pool.query(
+            `SELECT 
+          fy.*,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+          p.sector_id,
+          s.sector_name
+         FROM farmer_yield fy
+         LEFT JOIN farmers f ON fy.farmer_id = f.id
+         LEFT JOIN farm_products p ON fy.product_id = p.id
+         LEFT JOIN sectors s ON p.sector_id = s.sector_id
+         WHERE fy.id = ?`,
+            [result.insertId]
+        );
+
+        const yieldItem = yields[0];
+        res.status(201).json({
+            success: true,
+            yield: {
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy'
+            }
+        });
+    } catch (error) {
+        console.error('Failed to create yield:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to create yield',
+            error: error.message
+        });
+    }
+});
+
+
+
+router.get('/farmer-yield-distribution', async (req, res) => {
+  try {
+    const { farmerId, year } = req.query;
+
+    // Validate required parameters
+    if (!farmerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Farmer ID is required'
+      });
+    }
+
+    if (isNaN(farmerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid farmer ID provided'
+      });
+    }
+
+    // Validate year if provided
+    if (year && (isNaN(year) || year.length !== 4)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid year provided (must be 4 digits)'
+      });
+    }
+
+    // Build the query
+    let query = `
+      SELECT 
+        p.id as product_id,
+        p.name as product_name,
+        s.sector_id,
+        s.sector_name,
+        COUNT(fy.id) as yield_count,
+        SUM(fy.volume) as total_volume,
+        SUM(fy.Value) as total_value,
+        AVG(fy.volume) as avg_volume,
+        AVG(fy.Value) as avg_value,
+        MIN(fy.harvest_date) as first_harvest,
+        MAX(fy.harvest_date) as last_harvest
+      FROM farmer_yield fy
+      JOIN farm_products p ON fy.product_id = p.id
+      JOIN sectors s ON p.sector_id = s.sector_id
+      WHERE fy.farmer_id = ?
+    `;
+
+    const params = [farmerId];
+
+    // Add year filter if provided
+    if (year) {
+      query += ' AND YEAR(fy.harvest_date) = ?';
+      params.push(year);
+    }
+
+    // Complete the query
+    query += `
+      GROUP BY p.id
+      ORDER BY total_volume DESC
+    `;
+
+    const [productDistribution] = await pool.query(query, params);
+
+    // Calculate grand totals
+    const grandTotal = {
+      yieldCount: 0,
+      totalVolume: 0,
+      totalValue: 0
+    };
+
+    // Process each product
+    const products = productDistribution.map(row => {
+      const product = {
+        productId: row.product_id,
+        productName: row.product_name,
+        sectorId: row.sector_id,
+        sectorName: row.sector_name,
+        yieldCount: parseInt(row.yield_count),
+        totalVolume: parseFloat(row.total_volume),
+        totalValue: parseFloat(row.total_value),
+        avgVolume: parseFloat(row.avg_volume),
+        avgValue: parseFloat(row.avg_value),
+        firstHarvest: row.first_harvest,
+        lastHarvest: row.last_harvest,
+        percentageOfVolume: 0,
+        percentageOfValue: 0
+      };
+
+      // Update grand totals
+      grandTotal.yieldCount += product.yieldCount;
+      grandTotal.totalVolume += product.totalVolume;
+      grandTotal.totalValue += product.totalValue;
+
+      return product;
+    });
+
+    // Calculate percentages if there are results
+    if (productDistribution.length > 0) {
+      products.forEach(product => {
+        product.percentageOfVolume = grandTotal.totalVolume > 0 ?
+          Math.round((product.totalVolume / grandTotal.totalVolume) * 100 * 100) / 100 : 0;
+        product.percentageOfValue = grandTotal.totalValue > 0 ?
+          Math.round((product.totalValue / grandTotal.totalValue) * 100 * 100) / 100 : 0;
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        farmerId: farmerId,
+        yearFilter: year || 'all years',
+        grandTotal: grandTotal,
+        products: products
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer product distribution:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer product distribution',
+      error: {
+        code: 'FARMER_PRODUCT_DISTRIBUTION_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
+
+
+
+
+router.get('/yields/:farmId', async (req, res) => {
+    try {
+        const { farmId } = req.params;
+
+        // First, verify the farm exists
+        const [farmCheck] = await pool.query(
+            'SELECT farm_id FROM farms WHERE farm_id = ?',
+            [farmId]
+        );
+
+        if (farmCheck.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Farm not found'
+            });
+        }
+
+        // Get yields for the specific farm
+        const [yields] = await pool.query(`
+        SELECT 
+          fy.id,
+          fy.farmer_id,
+          fy.product_id,
+          fy.harvest_date,
+          fy.created_at,
+          fy.updated_at,
+          fy.farm_id,
+          fy.volume,
+          fy.notes,
+          fy.Value,
+          fy.images,
+          fy.status,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+          p.sector_id,
+          s.sector_name,
+          farm.farm_name,
+          farm.area as farm_area
+        FROM farmer_yield fy
+        LEFT JOIN farmers f ON fy.farmer_id = f.id
+        LEFT JOIN farm_products p ON fy.product_id = p.id
+        LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+        LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+        WHERE fy.farm_id = ?
+        ORDER BY fy.harvest_date DESC
+      `, [farmId]);
+
+        res.json({
+            success: true,
+            yields: yields.map(yieldItem => ({
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                farmName: yieldItem.farm_name,
+                farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy'
+            }))
+        });
+
+    } catch (error) {
+        console.error('Failed to fetch farm yields:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch yields for this farm',
+            error: {
+                code: 'FARM_YIELD_FETCH_ERROR',
+                details: error.message,
+                sqlMessage: error.sqlMessage
+            }
+        });
+    }
+});
+
+router.get('/farmer-yields/:farmerId?', async (req, res) => {
+    try {
+        const { farmerId } = req.params;
+
+        let query = `
+        SELECT 
+          fy.id,
+          fy.farmer_id,
+          fy.product_id,
+          fy.harvest_date,
+          fy.created_at,
+          fy.updated_at,
+          fy.farm_id,
+          fy.volume,
+          fy.notes,
+          fy.Value,
+          fy.images,
+          fy.status,
+          f.barangay,
+          f.firstname,
+          f.middlename,
+          f.surname,
+          f.extension,
+          p.name as product_name,
+           p.imgUrl as productImage,
+          p.sector_id,
+          s.sector_name,
+          farm.area as farm_area,
+          farm.farm_name
+        FROM farmer_yield fy
+        LEFT JOIN farmers f ON fy.farmer_id = f.id
+        LEFT JOIN farm_products p ON fy.product_id = p.id
+        LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+        LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+      `;
+
+        // Add WHERE clause if farmerId is provided
+        if (farmerId) {
+            query += ` WHERE fy.farmer_id = ? `;
+        }
+
+        // Changed from harvest_date to created_at for sorting
+        query += ` ORDER BY fy.harvest_date DESC`;
+
+        // Execute query with or without farmerId parameter
+        const [yields] = farmerId
+            ? await pool.query(query, [farmerId])
+            : await pool.query(query);
+
+        res.json({
+            success: true,
+            yields: yields.map(yieldItem => ({
+                test: "testssasd",
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                productId: yieldItem.product_id,
+                productImage: yieldItem.productImage,
+                productName: yieldItem.product_name,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                farmName: yieldItem.farm_name,
+                farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                barangay: yieldItem.barangay,
+                sectorId: yieldItem.sector_id, 
+                sector: yieldItem.sector_name || 'dummy'
+            }))
+        });
+    } catch (error) {
+        console.error('Failed to fetch yields:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch yields',
+            error: {
+                code: 'YIELD_FETCH_ERROR',
+                details: error.message,
+                sqlMessage: error.sqlMessage
+            }
+        });
+    }
+});
+
+router.get('/yield-distribution', async (req, res) => {
+    try {
+        const { sectorId, year } = req.query;
+
+        // Build the base query
+        let query = `
+        SELECT 
+          s.sector_id,
+          s.sector_name,
+          p.id as product_id,
+          p.name as product_name,
+          COUNT(fy.id) as yield_count,
+          SUM(fy.volume) as total_volume,
+          SUM(fy.Value) as total_value,
+          AVG(fy.volume) as avg_volume,
+          AVG(fy.Value) as avg_value
+        FROM farmer_yield fy
+        JOIN farm_products p ON fy.product_id = p.id
+        JOIN sectors s ON p.sector_id = s.sector_id
+      `;
+
+        const params = [];
+        const conditions = [];
+
+        // Add sector filter if provided
+        if (sectorId) {
+            if (isNaN(sectorId)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid sector ID provided'
+                });
+            }
+            conditions.push('s.sector_id = ?');
+            params.push(sectorId);
+        }
+
+        // Add year filter if provided
+        if (year) {
+            if (isNaN(year) || year.length !== 4) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid year provided (must be 4 digits)'
+                });
+            }
+            conditions.push('YEAR(fy.harvest_date) = ?');
+            params.push(year);
+        }
+
+        // Add WHERE clause if there are conditions
+        if (conditions.length > 0) {
+            query += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        // Complete the query
+        query += `
+        GROUP BY s.sector_id, p.id
+        ORDER BY s.sector_name, p.name
+      `;
+
+        const [yieldDistribution] = await pool.query(query, params);
+
+        // Organize the data by sector
+        const distributionBySector = {};
+
+        yieldDistribution.forEach(row => {
+            const sectorId = row.sector_id;
+
+            if (!distributionBySector[sectorId]) {
+                distributionBySector[sectorId] = {
+                    sectorId: sectorId,
+                    sectorName: row.sector_name,
+                    totalYields: 0,
+                    totalVolume: 0,
+                    totalValue: 0,
+                    products: []
+                };
+            }
+
+            const productData = {
+                productId: row.product_id,
+                productName: row.product_name,
+                yieldCount: parseInt(row.yield_count),
+                totalVolume: parseFloat(row.total_volume),
+                totalValue: parseFloat(row.total_value),
+                avgVolume: parseFloat(row.avg_volume),
+                avgValue: parseFloat(row.avg_value),
+                percentageOfSectorVolume: 0,
+                percentageOfSectorValue: 0
+            };
+
+            distributionBySector[sectorId].products.push(productData);
+            distributionBySector[sectorId].totalYields += productData.yieldCount;
+            distributionBySector[sectorId].totalVolume += productData.totalVolume;
+            distributionBySector[sectorId].totalValue += productData.totalValue;
+        });
+
+        // Calculate percentages for each product within its sector
+        // Calculate percentages for each product within its sector
+        Object.values(distributionBySector).forEach(sector => {
+            sector.products.forEach(product => {
+                product.percentageOfSectorVolume = sector.totalVolume > 0 ?
+                    Math.round((product.totalVolume / sector.totalVolume) * 100 * 100) / 100 : 0; // Round to 2 decimal places
+                product.percentageOfSectorValue = sector.totalValue > 0 ?
+                    Math.round((product.totalValue / sector.totalValue) * 100 * 100) / 100 : 0; // Round to 2 decimal places
+            });
+
+            // Sort products by volume (descending)
+            sector.products.sort((a, b) => b.totalVolume - a.totalVolume);
+        });
+
+        // Convert to array and sort by sector name
+        const result = Object.values(distributionBySector).sort((a, b) =>
+            a.sectorName.localeCompare(b.sectorName)
+        );
+
+        res.json({
+            success: true,
+            data: result,
+            ...(sectorId && { sectorFilter: sectorId }),
+            ...(year && { yearFilter: year })
+        });
+
+    } catch (error) {
+        console.error('Failed to fetch yield distribution:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch yield distribution',
+            error: {
+                code: 'YIELD_DISTRIBUTION_ERROR',
+                details: error.message,
+                sqlMessage: error.sqlMessage
+            }
+        });
+    }
+});
+
+
+
+
+
+
+
+
+
+router.get('/yield-statistics', async (req, res) => {
+    try {
+      const { year, farmerId } = req.query;
+  
+      // Improved addFilters function with status filter
+      const addFilters = (baseQuery, options = {}) => {
+        let query = baseQuery.trim();
+        const params = [];
+        const conditions = [];
+  
+        // Always include status = 'Accepted' condition
+        conditions.push(`fy.status = 'Accepted'`);
+  
+        if (year) {
+          conditions.push(`YEAR(${options.dateField || 'fy.harvest_date'}) = ?`);
+          params.push(year);
+        }
+  
+        if (farmerId) {
+          conditions.push(`fy.farmer_id = ?`);
+          params.push(farmerId);
+        }
+  
+        if (conditions.length > 0) {
+          const lowerQuery = query.toLowerCase();
+  
+          if (lowerQuery.includes('where')) {
+            // Just append the conditions with AND
+            query = query.replace(/(where\s+1\s*=\s*1)/i, `$1 AND ${conditions.join(' AND ')}`);
+            if (!/where\s+1\s*=\s*1/i.test(query)) {
+              query = query.replace(/(where\s+)/i, `$1${conditions.join(' AND ')} AND `);
+            }
+          } else {
+            // Insert WHERE before GROUP BY / ORDER BY / LIMIT if needed
+            const clauses = ['GROUP BY', 'ORDER BY', 'LIMIT'];
+            let insertPos = query.length;
+  
+            for (const clause of clauses) {
+              const idx = query.toUpperCase().indexOf(clause);
+              if (idx >= 0 && idx < insertPos) {
+                insertPos = idx;
+              }
+            }
+  
+            query = `${query.slice(0, insertPos)} WHERE ${conditions.join(' AND ')} ${query.slice(insertPos)}`;
+          }
+        }
+  
+        return { query, params };
+      };
+  
+      // Rest of your queries remain the same...
+      // 1. Total yield
+      const totalYieldQuery = addFilters(`
+        SELECT SUM(fy.volume) as totalYield 
+        FROM farmer_yield fy
+        JOIN farm_products p ON fy.product_id = p.id
+      `);
+      const [totalYieldResult] = await pool.query(totalYieldQuery.query, totalYieldQuery.params);
+  
+      // 2. Average yield per hectare
+      const avgYieldQuery = addFilters(`
+        SELECT 
+          IFNULL(ROUND(SUM(fy.volume) / NULLIF(SUM(farm.area), 0), 2), 0) as avgYieldPerHectare
+        FROM farmer_yield fy
+        JOIN farms farm ON fy.farm_id = farm.farm_id
+        JOIN farm_products p ON fy.product_id = p.id
+      `);
+      const [avgYieldResult] = await pool.query(avgYieldQuery.query, avgYieldQuery.params);
+  
+      // 3. Top crop yield - using WHERE 1=1 for simpler condition addition
+      const topCropQuery = addFilters(`
+        SELECT 
+          p.name as productName,
+          SUM(fy.volume) as totalVolume
+        FROM farmer_yield fy
+        JOIN farm_products p ON fy.product_id = p.id
+        WHERE 1=1
+        GROUP BY p.name
+        ORDER BY totalVolume DESC
+        LIMIT 1
+      `);
+      const [topCropResult] = await pool.query(topCropQuery.query, topCropQuery.params);
+  
+      // 4. This month's yield
+      const currentYear = new Date().getFullYear().toString();
+      const isCurrentYear = year === currentYear || !year;
+  
+      const thisMonthQuery = addFilters(`
+        SELECT SUM(fy.volume) as thisMonthYield
+        FROM farmer_yield fy
+        JOIN farm_products p ON fy.product_id = p.id
+        ${isCurrentYear ? `WHERE fy.harvest_date >= DATE_FORMAT(NOW(), '%Y-%m-01')` : ''}
+      `);
+      const [thisMonthResult] = await pool.query(thisMonthQuery.query, thisMonthQuery.params);
+  
+      // Format response
+      res.json({
+        success: true,
+        statistics: {
+          totalYield: totalYieldResult[0]?.totalYield || 0,
+          averageYieldPerHectare: avgYieldResult[0]?.avgYieldPerHectare ?
+            `${avgYieldResult[0].avgYieldPerHectare} t/ha` : '0 t/ha',
+          topCrop: topCropResult[0] ? {
+            product: topCropResult[0].productName,
+            volume: topCropResult[0].totalVolume
+          } : null,
+          thisMonthYield: thisMonthResult[0]?.thisMonthYield || 0,
+          year: year || 'all-time',
+          farmer: farmerId || 'all-farmers'
+        }
+      });
+  
+    } catch (error) {
+      console.error('Failed to fetch yield statistics:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch yield statistics',
+        error: {
+          code: 'YIELD_STATS_ERROR',
+          details: error.message,
+          sqlMessage: error.sqlMessage || 'No SQL error'
+        }
+      });
+    }
+  });
+  
+  
+  
+
+
+module.exports = router;
