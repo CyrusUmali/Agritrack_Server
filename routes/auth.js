@@ -4,8 +4,179 @@ const router = express.Router();
 const authenticate = require('../middleware/firebase-auth-middleware');
 const admin = require('firebase-admin');
 const pool = require('../connect'); 
+const axios = require('axios');
 
 const { sendTestEmail } = require('../gmailService'); // update path as needed
+
+
+
+
+
+
+router.post('/migrate-to-google', authenticate, async (req, res) => {
+  try {
+    const { accessToken } = req.body;
+    
+    // 1. Verify authentication
+    if (!req.user || !req.user.dbUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated'
+      });
+    }
+
+    const currentUser = req.user.dbUser;
+    
+    // 2. Verify Google access token
+    const tokenInfo = await axios.get('https://www.googleapis.com/oauth2/v3/tokeninfo', {
+      params: { access_token: accessToken }
+    });
+    
+    if (tokenInfo.data.error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Google access token'
+      });
+    }
+
+    const googleEmail = tokenInfo.data.email;
+    const googleUid = tokenInfo.data.sub;
+  
+    // 3. Check if Google account is already linked to another user
+    try {
+      const existingUser = await admin.auth().getUserByEmail(googleEmail);
+      if (existingUser.uid !== currentUser.firebase_uid) {
+        return res.status(200).json({
+          success: false,
+          message: 'This Google account is already linked to another user'
+        });
+      }
+    } catch (error) {
+      if (error.code !== 'auth/user-not-found') {
+        throw error;
+      }
+    }
+
+    // 4. Get current auth user data
+    const currentAuthUser = await admin.auth().getUser(currentUser.firebase_uid);
+    
+    // 5. Check if already using Google auth
+    if (currentAuthUser.providerData.some(provider => provider.providerId === 'google.com')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account is already using Google authentication'
+      });
+    }
+
+    // Start a MySQL transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // 6. Remove email/password provider if it exists
+      const emailProvider = currentAuthUser.providerData.find(
+        provider => provider.providerId === 'password'
+      );
+      
+      if (emailProvider) {
+        await admin.auth().updateUser(currentUser.firebase_uid, {
+          email: googleEmail,
+          emailVerified: true,
+          providersToDelete: ['password']
+        });
+      }
+
+      // 7. Link the Google account
+      await admin.auth().updateUser(currentUser.firebase_uid, {
+        providerToLink: {
+          uid: googleUid,
+          providerId: 'google.com',
+          email: googleEmail,
+          displayName: currentAuthUser.displayName || currentUser.name
+        }
+      });
+
+      // 8. Update MySQL database
+      await connection.query(
+        `UPDATE users 
+         SET email = ?, password = NULL
+         WHERE firebase_uid = ?`,
+        [googleEmail, currentUser.firebase_uid]
+      );
+
+      // Commit transaction
+      await connection.commit();
+
+      // 9. Return success response
+      const updatedUser = await admin.auth().getUser(currentUser.firebase_uid);
+      const [dbUser] = await pool.query(
+        'SELECT * FROM users WHERE firebase_uid = ?',
+        [currentUser.firebase_uid]
+      );
+      
+      res.status(200).json({
+        success: true,
+        message: 'Successfully migrated to Google authentication',
+        user: {
+          firebase_uid: updatedUser.uid,
+          email: googleEmail,
+          name: updatedUser.displayName || dbUser[0].name,
+          role: dbUser[0].role,
+          authProvider: 'google'
+        }
+      });
+
+    } catch (error) {
+      // Rollback transaction on error
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+  } catch (error) {
+    console.error('Google migration error:', error);
+    
+    let errorMessage = 'Failed to migrate to Google authentication';
+    let statusCode = 500;
+    
+    if (error.code === 'auth/id-token-expired') {
+      errorMessage = 'Google token expired';
+      statusCode = 401;
+    } else if (error.code === 'auth/id-token-revoked') {
+      errorMessage = 'Google token revoked';
+      statusCode = 401;
+    } else if (error.code === 'auth/email-already-exists') {
+      errorMessage = 'Google account is already linked to another user';
+      statusCode = 409;
+    } else if (error.code === 'auth/user-not-found') {
+      errorMessage = 'User account not found';
+      statusCode = 404;
+    } else if (error.code === 'auth/requires-recent-login') {
+      errorMessage = 'This operation requires recent authentication. Please log in again.';
+      statusCode = 401;
+    }
+
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 router.get('/associations', async (req, res) => {
   try {
@@ -1548,6 +1719,7 @@ router.post('/register-farmer', async (req, res) => {
 
 
 
+
 router.put('/users/:id', authenticate, async (req, res) => {
   try {
     const userId = parseInt(req.params.id, 10);
@@ -2869,8 +3041,6 @@ router.get('/farmers', authenticate, async (req, res) => {
 });
 
 
-
-
 router.get('/farmer-statistics', async (req, res) => {
   try {
     const { year } = req.query;
@@ -2914,13 +3084,13 @@ router.get('/farmer-statistics', async (req, res) => {
     `);
     const [activeResult] = await pool.query(activeQuery.query, activeQuery.params);
 
-    // 3. Inactive farmers (assuming status field exists)
-    const inactiveQuery = addFilters(`
-      SELECT COUNT(*) as inactiveFarmers 
+    // 3. Unregistered farmers (those with no user account)
+    const unregisteredQuery = addFilters(`
+      SELECT COUNT(*) as unregisteredFarmers 
       FROM farmers f 
-      WHERE f.status = 'inactive'
+      WHERE f.user_id IS NULL OR f.user_id = 0
     `);
-    const [inactiveResult] = await pool.query(inactiveQuery.query, inactiveQuery.params);
+    const [unregisteredResult] = await pool.query(unregisteredQuery.query, unregisteredQuery.params);
 
     // 4. Registered farmers (with user account)
     const registeredQuery = addFilters(`
@@ -2969,7 +3139,7 @@ router.get('/farmer-statistics', async (req, res) => {
     const responseData = {
       totalFarmers: totalResult[0]?.totalFarmers || 0,
       activeFarmers: activeResult[0]?.activeFarmers || 0,
-      inactiveFarmers: inactiveResult[0]?.inactiveFarmers || 0,
+      unregisteredFarmers: unregisteredResult[0]?.unregisteredFarmers || 0,
       registeredFarmers: registeredResult[0]?.registeredFarmers || 0,
       newFarmers: newFarmersResult[0]?.newFarmers || 0,
       year: year || 'all-time',
@@ -2994,6 +3164,8 @@ router.get('/farmer-statistics', async (req, res) => {
     });
   }
 });
+
+
 
 router.get('/top-contributors', async (req, res) => {
   try {
@@ -4707,7 +4879,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     // Construct full name
     const name = `${firstname}${middlename ? ' ' + middlename : ''}${surname ? ' ' + surname : ''}${extension ? ' ' + extension : ''}`;
 
-    // Update farmer
+    // Update farmer - including the status column now
     await pool.query(
       `UPDATE farmers SET 
         name = ?,
@@ -4736,6 +4908,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         person_to_notify = ?,
         ptn_contact = ?,
         ptn_relationship = ?,
+        status = ?,
         updated_at = NOW()
       WHERE id = ?`,
       [
@@ -4765,17 +4938,18 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         person_to_notify || null,
         ptn_contact || null,
         ptn_relationship || null,
+        accountStatus || null, // Added status field for farmers table
         farmerId
       ]
     );
 
-   // Update user status if accountStatus is provided and user exists
-if (accountStatus && userId) {
-  await pool.query(
-    'UPDATE users SET status = ? WHERE id = ?',  // Added WHERE clause
-    [accountStatus, userId]
-  );
-}
+    // Update user status if accountStatus is provided and user exists
+    if (accountStatus && userId) {
+      await pool.query(
+        'UPDATE users SET status = ? WHERE id = ?',
+        [accountStatus, userId]
+      );
+    }
 
     // Get the updated farmer with sector, association, and user info
     const [updatedFarmer] = await pool.query(
@@ -4829,6 +5003,7 @@ if (accountStatus && userId) {
         person_to_notify: farmer.person_to_notify || null,
         ptn_contact: farmer.ptn_contact || null,
         ptn_relationship: farmer.ptn_relationship || null,
+        status: farmer.status || null, // Include farmer status in response
         association: farmer.association_id ? 
           `${farmer.association_id}: ${farmer.association_name}` : null,
         associationId: farmer.association_id || null,
@@ -4849,6 +5024,8 @@ if (accountStatus && userId) {
     });
   }
 });
+
+
 // DELETE farmer
 router.delete('/farmers/:id', authenticate, async (req, res) => {
   try {
@@ -4901,9 +5078,6 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
 
 
 
-
-
- 
 
 router.get('/user-statistics', async (req, res) => {
   try {
@@ -4961,13 +5135,16 @@ router.get('/user-statistics', async (req, res) => {
 
     const [newUsersResult] = await pool.query(newUsersQuery, newUsersParams);
 
-    // 4. Active users today (placeholder - would need login tracking)
-    const activeToday = 0;
+    // 4. Count inactive users
+    const inactiveUsersQuery = addYearFilter(
+      `SELECT COUNT(*) as inactiveUsers FROM users WHERE status = 'Inactive'`
+    );
+    const [inactiveUsersResult] = await pool.query(inactiveUsersQuery.query, inactiveUsersQuery.params);
 
     // Format the response data
     const responseData = {
       totalUsers: totalUsersResult[0]?.totalUsers || 0,
-      activeToday, // Currently not implemented
+      inactiveUsers: inactiveUsersResult[0]?.inactiveUsers || 0,
       roles,
       newUsers: newUsersResult[0]?.newUsers || 0,
       year: year || 'all-time'
@@ -4991,7 +5168,6 @@ router.get('/user-statistics', async (req, res) => {
     });
   }
 });
-
 
 
 
