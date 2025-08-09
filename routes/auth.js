@@ -2693,7 +2693,7 @@ router.get('/farm-statistics', async (req, res) => {
     const responseData = {
       totalFarms: totalFarmsResult[0]?.totalFarms || 0,
       totalArea: parseFloat(totalArea.toFixed(2)), // Now totalArea is definitely a number
-      averageYield: avgYieldResult[0]?.avgYield ? `${avgYieldResult[0].avgYield} t/ha` : '0 t/ha',
+      averageYield: avgYieldResult[0]?.avgYield ? `${avgYieldResult[0].avgYield} kg/ha` : '0 kg/ha',
       uniqueOwners: uniqueOwnersResult[0]?.uniqueOwners || 0,
       year: year || 'all-time',
       sector: userSectorId || 'all-sectors'
