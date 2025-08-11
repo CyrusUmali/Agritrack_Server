@@ -4763,6 +4763,7 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
         civil_status: farmer.civil_status || null,
         spouse_name: farmer.spouse_name || null,
         religion: farmer.religion || null,
+        birthday: farmer.birthday ? new Date(farmer.birthday).toISOString().split('T')[0] : null, // Format as YYYY-MM-DD
         household_num: farmer.household_num,
         male_members_num: farmer.male_members_num || null,
         female_members_num: farmer.female_members_num || null,
@@ -4788,6 +4789,10 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
+
+
+
+
 
 // PUT update farmer
 router.put('/farmers/:id', authenticate, async (req, res) => {
@@ -4819,7 +4824,8 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       ptn_contact,
       ptn_relationship,
       accountStatus,
-      association
+      association,
+      birthday // Add birthday field
     } = req.body;
 
     // Validate required fields
@@ -4837,6 +4843,54 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       const parts = association.split(':');
       if (parts.length > 0) {
         assocId = parseInt(parts[0].trim()) || null;
+      }
+    }
+
+    // Parse birthday date if provided
+    let birthdayDate = null;
+    if (birthday) {
+      try {
+        // Parse the incoming date string (expecting ISO format: YYYY-MM-DD)
+        const parsedDate = new Date(birthday);
+        
+        // Validate the date
+        if (isNaN(parsedDate.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid birthday date format',
+            error: {
+              code: 'INVALID_BIRTHDAY',
+              details: 'Birthday must be a valid date in format YYYY-MM-DD'
+            }
+          });
+        }
+
+        // Check if date is in the future
+        if (parsedDate > new Date()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Birthday cannot be in the future',
+            error: {
+              code: 'FUTURE_BIRTHDAY',
+              details: 'Birthday must be a date in the past'
+            }
+          });
+        }
+
+        // Format as YYYY-MM-DD for MySQL DATE type
+        const year = parsedDate.getFullYear();
+        const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
+        const day = String(parsedDate.getDate()).padStart(2, '0');
+        birthdayDate = `${year}-${month}-${day}`;
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid birthday date',
+          error: {
+            code: 'INVALID_BIRTHDAY',
+            details: error.message
+          }
+        });
       }
     }
 
@@ -4879,7 +4933,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     // Construct full name
     const name = `${firstname}${middlename ? ' ' + middlename : ''}${surname ? ' ' + surname : ''}${extension ? ' ' + extension : ''}`;
 
-    // Update farmer - including the status column now
+    // Update farmer - including the birthday column
     await pool.query(
       `UPDATE farmers SET 
         name = ?,
@@ -4909,6 +4963,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         ptn_contact = ?,
         ptn_relationship = ?,
         status = ?,
+        birthday = ?,
         updated_at = NOW()
       WHERE id = ?`,
       [
@@ -4938,7 +4993,8 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         person_to_notify || null,
         ptn_contact || null,
         ptn_relationship || null,
-        accountStatus || null, // Added status field for farmers table
+        accountStatus || null,
+        birthdayDate, // Add birthday to the query (already formatted as YYYY-MM-DD)
         farmerId
       ]
     );
@@ -4970,6 +5026,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
 
     const farmer = updatedFarmer[0];
 
+    // Format the response
     res.json({
       success: true,
       farmer: {
@@ -5003,7 +5060,8 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
         person_to_notify: farmer.person_to_notify || null,
         ptn_contact: farmer.ptn_contact || null,
         ptn_relationship: farmer.ptn_relationship || null,
-        status: farmer.status || null, // Include farmer status in response
+        status: farmer.status || null,
+        birthday: farmer.birthday ? farmer.birthday.toISOString().split('T')[0] : null, // Format as YYYY-MM-DD
         association: farmer.association_id ? 
           `${farmer.association_id}: ${farmer.association_name}` : null,
         associationId: farmer.association_id || null,
@@ -5024,6 +5082,12 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
+
+
+
+
+
+
 
 
 // DELETE farmer
