@@ -8,6 +8,8 @@ const pool = require('../connect');
 
 
 
+
+
 router.get('/sector-yields-report', async (req, res) => {
     try {
         // Extract and clean the IDs
@@ -29,7 +31,7 @@ router.get('/sector-yields-report', async (req, res) => {
         let query;
         let groupBy = '';
         let selectFields = `
-            s.sector_id,
+            p.sector_id,
             s.sector_name,
             fy.product_id,
             p.name as product_name,
@@ -42,7 +44,7 @@ router.get('/sector-yields-report', async (req, res) => {
 
         if (viewBy === 'Monthly') {
             selectFields = `
-                s.sector_id,
+                p.sector_id,
                 s.sector_name,
                 fy.product_id,
                 p.name as product_name,
@@ -54,10 +56,10 @@ router.get('/sector-yields-report', async (req, res) => {
                 DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
                 DATE_FORMAT(fy.harvest_date, '%M') as month_name
             `;
-            groupBy = 'GROUP BY s.sector_id, YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id, p.name';
+            groupBy = 'GROUP BY p.sector_id, YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id, p.name';
         } else if (viewBy === 'Yearly') {
             selectFields = `
-                s.sector_id,
+                p.sector_id,
                 s.sector_name,
                 fy.product_id,
                 p.name as product_name,
@@ -70,11 +72,11 @@ router.get('/sector-yields-report', async (req, res) => {
                 DATE_FORMAT(fy.harvest_date, '%M') as month_name,
                 DATE_FORMAT(fy.harvest_date, '%Y') as year_display
             `;
-            groupBy = 'GROUP BY s.sector_id, YEAR(fy.harvest_date), fy.product_id, p.name';
+            groupBy = 'GROUP BY p.sector_id, YEAR(fy.harvest_date), fy.product_id, p.name';
         } else {
             // Individual entries
             selectFields = `
-                s.sector_id,
+                p.sector_id,
                 s.sector_name,
                 fy.product_id,
                 p.name as product_name,
@@ -102,11 +104,11 @@ router.get('/sector-yields-report', async (req, res) => {
         query = `
             SELECT 
                 ${selectFields}
-            FROM sectors s
-            LEFT JOIN farmers f ON s.sector_id = f.sector_id
-            LEFT JOIN farms farm ON f.id = farm.farmer_id
-            LEFT JOIN farmer_yield fy ON farm.farm_id = fy.farm_id AND (fy.status IS NULL OR fy.status = "Accepted")
-            LEFT JOIN farm_products p ON fy.product_id = p.id
+            FROM farm_products p
+            LEFT JOIN sectors s ON p.sector_id = s.sector_id
+            LEFT JOIN farmer_yield fy ON p.id = fy.product_id AND (fy.status IS NULL OR fy.status = "Accepted")
+            LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+            LEFT JOIN farmers f ON farm.farmer_id = f.id
             WHERE 1=1
         `;
 
@@ -114,7 +116,7 @@ router.get('/sector-yields-report', async (req, res) => {
         const params = [];
 
         if (sectorId) {
-            conditions.push('s.sector_id = ?');
+            conditions.push('p.sector_id = ?');
             params.push(sectorId);
         }
 
@@ -156,13 +158,13 @@ router.get('/sector-yields-report', async (req, res) => {
         let formattedYields;
         if (viewBy === 'Monthly') {
             formattedYields = yields.map(yield => ({
-                sector_id: yield.sector_id,
+                // sector_id: yield.sector_id,
                 sector_name: yield.sector_name,
                 period: yield.month_year,
                 harvest_date: `${yield.month_name} ${yield.harvest_year}`,
                 product: yield.product_id ? {
                     id: yield.product_id,
-                    name: yield.product_name,
+                    name: yield.product_name, 
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
@@ -172,7 +174,7 @@ router.get('/sector-yields-report', async (req, res) => {
             }));
         } else if (viewBy === 'Yearly') {
             formattedYields = yields.map(yield => ({
-                sector_id: yield.sector_id,
+                // sector_id: yield.sector_id,
                 sector_name: yield.sector_name,
                 period: yield.year,
                 harvest_date: yield.year_display,
@@ -190,7 +192,8 @@ router.get('/sector-yields-report', async (req, res) => {
         } else {
             // Individual entries
             formattedYields = yields.map(yield => ({
-                sector_id: yield.sector_id,
+                // sector_id: yield.sector_id,
+                // test:"w",
                 sector_name: yield.sector_name,
                 product: yield.product_name,
                 harvest_date: yield.harvest_date ? 
@@ -209,7 +212,7 @@ router.get('/sector-yields-report', async (req, res) => {
                 const key = `${yield.sector_id}_${yield.period}`;
                 if (!groupedData[key]) {
                     groupedData[key] = {
-                        sector_id: yield.sector_id,
+                        // sector_id: yield.sector_id,
                         sector_name: yield.sector_name,
                         period: yield.period,
                         period_display: viewBy === 'Monthly' ? `${yield.month_name} ${yield.year}` : yield.year_display,
@@ -235,7 +238,7 @@ router.get('/sector-yields-report', async (req, res) => {
 
             // Convert to array format
             formattedYields = Object.values(groupedData).map(item => ({
-                sector_id: item.sector_id,
+                // sector_id: item.sector_id,
                 sector_name: item.sector_name,
                 period: item.period,
                 period_display: item.period_display,
@@ -276,6 +279,8 @@ router.get('/sector-yields-report', async (req, res) => {
         });
     }
 });
+
+
 
 
 
@@ -917,228 +922,7 @@ router.get('/farmers-report', async (req, res) => {
     }
   }); 
  
-  
-  router.get('/sector-yields-report', async (req, res) => {
-    try {
-      // Extract and clean the sector ID
-      const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
-  
-  
-  
-      const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
-  
-      
-      // Parse count parameter - if it's a number use it, otherwise return all
-      const count = countParam === 'all' ? null : parseInt(countParam);
-      const limitCount = Number.isInteger(count) && count > 0 ? count : null;
-  
-  
-      // Other params
-      const { startDate, endDate, viewBy } = req.query;
-  
-      // Validate date range
-      const dateRangeValid = startDate && endDate && startDate !== endDate;
-  
-      let query;
-      let groupBy = '';
-      let selectFields = `
-        s.sector_id,
-        s.sector_name,
-        NULL as product_id,
-        'All Products' as product_name,
-        NULL as harvest_date,
-        NULL as volume,
-        NULL as Value,
-        NULL as harvest_year,
-        NULL as harvest_month
-      `;
-  
-      if (viewBy === 'Monthly') {
-        selectFields = `
-          s.sector_id,
-          s.sector_name,
-          NULL as product_id,
-          'All Products' as product_name,
-          NULL as harvest_date,
-          COALESCE(SUM(fy.volume), 0) as volume,
-          COALESCE(SUM(fy.Value), 0) as Value,
-          YEAR(fy.harvest_date) as harvest_year,
-          MONTH(fy.harvest_date) as harvest_month,
-          DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
-          DATE_FORMAT(fy.harvest_date, '%M') as month_name
-        `;
-        groupBy = 'GROUP BY s.sector_id, YEAR(fy.harvest_date), MONTH(fy.harvest_date)';
-      } else if (viewBy === 'Yearly') {
-        selectFields = `
-          s.sector_id,
-          s.sector_name,
-          NULL as product_id,
-          'All Products' as product_name,
-          NULL as harvest_date,
-          COALESCE(SUM(fy.volume), 0) as volume,
-          COALESCE(SUM(fy.Value), 0) as Value,
-          YEAR(fy.harvest_date) as harvest_year,
-          NULL as harvest_month,
-          YEAR(fy.harvest_date) as year
-        `;
-        groupBy = 'GROUP BY s.sector_id, YEAR(fy.harvest_date)';
-      } else {
-        // Individual entries
-        selectFields = `
-          s.sector_id,
-          s.sector_name,
-          NULL as product_id,
-          'All Products' as product_name,
-          fy.harvest_date,
-          fy.volume,
-          fy.Value,
-          YEAR(fy.harvest_date) as harvest_year,
-          MONTH(fy.harvest_date) as harvest_month
-        `;
-      }
-  
-  
-  
-      const [sectors] = await pool.query('SELECT sector_id, sector_name FROM sectors ORDER BY sector_name');
-  
-      query = `
-        SELECT 
-          ${selectFields}
-        FROM sectors s
-        LEFT JOIN farmers f ON s.sector_id = f.sector_id
-        LEFT JOIN farms farm ON f.id = farm.farmer_id
-        LEFT JOIN farmer_yield fy ON farm.farm_id = fy.farm_id
-        WHERE 1=1
-      `;
-  
-      const conditions = [];
-      const params = [];
-  
-      if (sectorId) {
-        conditions.push('s.sector_id = ?');
-        params.push(sectorId);
-      }
-  
-      // Add date range filter if valid
-      if (dateRangeValid) {
-        conditions.push('(fy.harvest_date IS NULL OR fy.harvest_date BETWEEN ? AND ?)');
-        params.push(startDate, endDate);
-      }
-  
-      if (conditions.length > 0) {
-        query += ' AND ' + conditions.join(' AND ');
-      }
-  
-      query += ` ${groupBy} ORDER BY `;
-  
-      // Adjust ordering based on viewBy
-      if (viewBy === 'Monthly') {
-        query += 'month_year DESC, sector_name';
-      } else if (viewBy === 'Yearly') {
-        query += 'year DESC, sector_name';
-      } else {
-        query += 'sector_name, fy.harvest_date DESC';
-      }
-  
-  
-        // Add LIMIT clause if count is specified
-        if (limitCount !== null) {
-          query += ' LIMIT ?';
-          params.push(limitCount);
-        }
-  
-      const [yields] = await pool.query(query, params);
-  
-      // Format response
-      let formattedYields;
-      if (viewBy === 'Monthly') {
-        formattedYields = yields.map(yield => ({
-          sector_id: yield.sector_id,
-          sector_name: yield.sector_name,
-          period: yield.month_year,
-          period_display: `${yield.month_name} ${yield.harvest_year}`,
-          product: 'All Products',
-          volume: parseFloat(yield.volume),
-          total_value: yield.Value ? parseFloat(yield.Value) : 0,
-          year: yield.harvest_year,
-          month: yield.harvest_month,
-          month_name: yield.month_name
-        }));
-      } else if (viewBy === 'Yearly') {
-        formattedYields = yields.map(yield => ({
-          sector_id: yield.sector_id,
-          sector_name: yield.sector_name,
-          period: yield.year.toString(),
-          product: 'All Products',
-          volume: parseFloat(yield.volume),
-          total_value: yield.Value ? parseFloat(yield.Value) : 0,
-          year: yield.harvest_year
-        }));
-      } else {
-        // Individual entries
-        formattedYields = yields.map(yield => ({
-          sector_id: yield.sector_id,
-          sector_name: yield.sector_name,
-          product: 'All Products',
-          harvest_date: yield.harvest_date || null,
-          volume: yield.volume ? parseFloat(yield.volume) : 0,
-          value: yield.Value ? parseFloat(yield.Value) : 0
-        }));
-      }
-  
-      if (viewBy === 'Monthly' || viewBy === 'Yearly') {
-        const sectorData = {};
-  
-        sectors.forEach(sector => {
-          sectorData[sector.sector_id] = {
-            sector_id: sector.sector_id,
-            sector_name: sector.sector_name,
-            period: viewBy === 'Monthly' ? (formattedYields[0]?.period || '') : (formattedYields[0]?.period || ''),
-            period_display: viewBy === 'Monthly' ? (formattedYields[0]?.period_display || '') : '',
-            product: 'All Products',
-            volume: 0,
-            total_value: 0,
-            year: viewBy === 'Monthly' ? (formattedYields[0]?.year || '') : (formattedYields[0]?.year || ''),
-            month: viewBy === 'Monthly' ? (formattedYields[0]?.month || '') : null,
-            month_name: viewBy === 'Monthly' ? (formattedYields[0]?.month_name || '') : null
-          };
-        });
-  
-        // Merge with actual data
-        formattedYields.forEach(yield => {
-          sectorData[yield.sector_id] = yield;
-        });
-  
-        formattedYields = Object.values(sectorData);
-      }
-  
-      res.json({
-        success: true,
-        filters: {
-          sectorId: sectorId || 'all',
-          startDate: dateRangeValid ? startDate : 'all',
-          endDate: dateRangeValid ? endDate : 'all',
-          viewBy: viewBy || 'individual',
-                    count: limitCount !== null ? limitCount : 'all'
-        },
-        count: formattedYields.length,
-        yields: formattedYields
-      });
-  
-    } catch (error) {
-      console.error('Failed to fetch sector yields:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to fetch sector yields',
-        error: {
-          code: 'SECTOR_YIELD_FILTER_ERROR',
-          details: error.message,
-          sqlMessage: error.sqlMessage || 'No SQL error message'
-        }
-      });
-    }
-  });
-  
+   
 
    
   router.get('/product-yields-report', async (req, res) => {

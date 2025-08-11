@@ -2019,11 +2019,15 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
 
 
+
+
+
+
 router.get('/sectors', async (req, res) => {
   try {
     const { year } = req.query;
 
-    // Base query for sector information
+    // 1. Base query for sector information
     const [sectors] = await pool.query(`
       SELECT 
         s.sector_id,
@@ -2041,33 +2045,36 @@ router.get('/sectors', async (req, res) => {
         sectors: [],
         totals: {
           totalLandArea: 0,
+          totalAreaHarvested: 0,
           totalFarmers: 0,
           totalFarms: 0,
           totalYields: 0,
+          totalYieldVolume: 0,
           totalYieldValue: 0
         }
       });
     }
 
-    // Query for farm-based statistics (farmers, farms, land area)
+    // 2. Farm stats (includes land area from farms)
     const [farmStats] = await pool.query(`
       SELECT 
         s.sector_id,
-        COUNT(DISTINCT f.farmer_id) as farmer_count,
-        COUNT(DISTINCT f.farm_id) as farm_count,
-        SUM(f.area) as total_area
+        COUNT(DISTINCT f.farmer_id) AS farmer_count,
+        COUNT(DISTINCT f.farm_id) AS farm_count,
+        SUM(f.area) AS total_area
       FROM sectors s
       LEFT JOIN farms f ON s.sector_id = f.sector_id
       GROUP BY s.sector_id
     `);
 
-    // Build the yield stats query with optional year filter and Accepted status
+    // 3. Yield stats query (now includes area_harvested)
     let yieldStatsQuery = `
       SELECT 
         fp.sector_id,
-        COUNT(DISTINCT fy.id) as yield_count,
-        SUM(fy.volume) as total_volume,
-        SUM(fy.Value) as total_value
+        COUNT(DISTINCT fy.id) AS yield_count,
+        SUM(fy.volume) AS total_volume,
+        SUM(fy.Value) AS total_value,
+        SUM(fy.area_harvested) AS total_area_harvested
       FROM farmer_yield fy
       JOIN farm_products fp ON fy.product_id = fp.id
       JOIN sectors s ON fp.sector_id = s.sector_id
@@ -2080,34 +2087,35 @@ router.get('/sectors', async (req, res) => {
 
     yieldStatsQuery += ` GROUP BY fp.sector_id`;
 
-    // Execute yield stats query with year parameter if provided
     const [yieldStats] = year
       ? await pool.query(yieldStatsQuery, [year])
       : await pool.query(yieldStatsQuery);
 
-    // Build the totals query with optional year filter and Accepted status
+    // 4. Totals query (added total_area_harvested)
     let totalsQuery = `
       SELECT 
-        COUNT(DISTINCT f.farmer_id) as total_farmers,
-        COUNT(DISTINCT f.farm_id) as total_farms,
-        SUM(f.area) as total_land_area,
-        COUNT(DISTINCT fy.id) as total_yields,
-        SUM(fy.volume) as total_yield_volume,
-        SUM(fy.Value) as total_yield_value
+        COUNT(DISTINCT f.farmer_id) AS total_farmers,
+        COUNT(DISTINCT f.farm_id) AS total_farms,
+        SUM(f.area) AS total_land_area,
+        SUM(fy.area_harvested) AS total_area_harvested,
+        COUNT(DISTINCT fy.id) AS total_yields,
+        SUM(fy.volume) AS total_yield_volume,
+        SUM(fy.Value) AS total_yield_value
       FROM farms f
-      LEFT JOIN farmer_yield fy ON f.farm_id = fy.farm_id AND fy.status = 'Accepted'
+      LEFT JOIN farmer_yield fy 
+        ON f.farm_id = fy.farm_id 
+        AND fy.status = 'Accepted'
     `;
 
     if (year) {
       totalsQuery += ` WHERE YEAR(fy.harvest_date) = ?`;
     }
 
-    // Execute totals query with year parameter if provided
     const [totals] = year
       ? await pool.query(totalsQuery, [year])
       : await pool.query(totalsQuery);
 
-    // Combine sector info with their stats
+    // 5. Combine sector info with stats (added totalAreaHarvested)
     const processedSectors = sectors.map(sector => {
       const farmStat = farmStats.find(stat => stat.sector_id === sector.sector_id) || {};
       const yieldStat = yieldStats.find(stat => stat.sector_id === sector.sector_id) || {};
@@ -2120,6 +2128,7 @@ router.get('/sectors', async (req, res) => {
         updatedAt: sector.updated_at,
         stats: {
           totalLandArea: farmStat.total_area ? parseFloat(farmStat.total_area) : 0,
+          totalAreaHarvested: yieldStat.total_area_harvested ? parseFloat(yieldStat.total_area_harvested) : 0,
           totalFarmers: farmStat.farmer_count ? parseInt(farmStat.farmer_count) : 0,
           totalFarms: farmStat.farm_count ? parseInt(farmStat.farm_count) : 0,
           totalYields: yieldStat.yield_count ? parseInt(yieldStat.yield_count) : 0,
@@ -2129,9 +2138,10 @@ router.get('/sectors', async (req, res) => {
       };
     });
 
-    // Prepare totals data
+    // 6. Prepare totals data (added totalAreaHarvested)
     const processedTotals = {
       totalLandArea: totals[0].total_land_area ? parseFloat(totals[0].total_land_area) : 0,
+      totalAreaHarvested: totals[0].total_area_harvested ? parseFloat(totals[0].total_area_harvested) : 0,
       totalFarmers: totals[0].total_farmers ? parseInt(totals[0].total_farmers) : 0,
       totalFarms: totals[0].total_farms ? parseInt(totals[0].total_farms) : 0,
       totalYields: totals[0].total_yields ? parseInt(totals[0].total_yields) : 0,
@@ -2139,11 +2149,12 @@ router.get('/sectors', async (req, res) => {
       totalYieldValue: totals[0].total_yield_value ? parseFloat(totals[0].total_yield_value) : 0
     };
 
+    // 7. Response
     res.json({
       success: true,
       sectors: processedSectors,
       totals: processedTotals,
-      ...(year && { yearFilter: year }) // Include the year filter in response if provided
+      ...(year && { yearFilter: year })
     });
 
   } catch (error) {
@@ -2159,6 +2170,8 @@ router.get('/sectors', async (req, res) => {
     });
   }
 });
+
+
 
 
 

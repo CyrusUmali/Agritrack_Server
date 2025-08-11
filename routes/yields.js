@@ -62,7 +62,14 @@ router.get('/yields/:id', async (req, res) => {
         console.error('Failed to fetch yield:', error);
         res.status(500).json({ success: false, message: 'Failed to fetch yield' });
     }
+
+
+
+
 });
+
+
+
 
 router.put('/yields/:id', async (req, res) => {
     try {
@@ -71,6 +78,7 @@ router.put('/yields/:id', async (req, res) => {
             product_id,
             harvest_date,
             farm_id,
+            area_harvested,
             volume,
             notes,
             value,
@@ -78,14 +86,30 @@ router.put('/yields/:id', async (req, res) => {
             status
         } = req.body;
 
+        // ✅ Validate area_harvested
+        if (
+            area_harvested === undefined ||
+            area_harvested === null ||
+            isNaN(area_harvested) ||
+            Number(area_harvested) <= 0
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid area_harvested value. It must be a positive number.'
+            });
+        }
+
         // Convert ISO date to MySQL compatible format
-        const mysqlHarvestDate = harvest_date ? new Date(harvest_date).toISOString().slice(0, 19).replace('T', ' ') : null;
+        const mysqlHarvestDate = harvest_date
+            ? new Date(harvest_date).toISOString().slice(0, 19).replace('T', ' ')
+            : null;
 
         await pool.query(
             `UPDATE farmer_yield 
          SET 
            farmer_id = ?, 
            product_id = ?, 
+           area_harvested = ?,
            harvest_date = ?, 
            farm_id = ?, 
            volume = ?, 
@@ -98,7 +122,8 @@ router.put('/yields/:id', async (req, res) => {
             [
                 farmer_id,
                 product_id,
-                mysqlHarvestDate,  // Use the converted date here
+                area_harvested,
+                mysqlHarvestDate,
                 farm_id,
                 volume,
                 notes,
@@ -109,7 +134,6 @@ router.put('/yields/:id', async (req, res) => {
             ]
         );
 
-        // Rest of your code remains the same...
         const [yields] = await pool.query(
             `SELECT 
           fy.*,
@@ -142,6 +166,7 @@ router.put('/yields/:id', async (req, res) => {
                 productId: yieldItem.product_id,
                 productName: yieldItem.product_name,
                 harvestDate: yieldItem.harvest_date,
+                area_harvested: yieldItem.area_harvested,
                 createdAt: yieldItem.created_at,
                 updatedAt: yieldItem.updated_at,
                 farmId: yieldItem.farm_id,
@@ -159,6 +184,13 @@ router.put('/yields/:id', async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update yield' });
     }
 });
+
+
+
+
+
+
+
 
 // Delete a yield record
 router.delete('/yields/:id', async (req, res) => {
@@ -423,7 +455,10 @@ router.get('/yields/farm/:farmId', async (req, res) => {
     }
 });
 
-// Generate multiple yield records with random data
+
+
+
+
 router.post('/yields/generate', async (req, res) => {
     try {
         const { farmer_id, farm_id, product_id, year, count = 20 } = req.body;
@@ -435,7 +470,7 @@ router.post('/yields/generate', async (req, res) => {
             });
         }
 
-        // First verify the farmer exists
+        // Verify the farmer exists
         const [farmers] = await pool.query('SELECT id FROM farmers WHERE id = ?', [farmer_id]);
         if (farmers.length === 0) {
             return res.status(404).json({
@@ -444,16 +479,15 @@ router.post('/yields/generate', async (req, res) => {
             });
         }
 
-        // Base query to get farms owned by this farmer and their sectors
+        // Get farms + area for this farmer
         let query = `
-        SELECT f.farm_id, f.products, f.sector_id, s.sector_name 
-        FROM farms f
-        LEFT JOIN sectors s ON f.sector_id = s.sector_id
-        WHERE f.farmer_id = ?
-      `;
+            SELECT f.farm_id, f.products, f.sector_id, f.area, s.sector_name 
+            FROM farms f
+            LEFT JOIN sectors s ON f.sector_id = s.sector_id
+            WHERE f.farmer_id = ?
+        `;
         const params = [farmer_id];
 
-        // Add farm filter if provided
         if (farm_id) {
             query += ' AND f.farm_id = ?';
             params.push(farm_id);
@@ -483,11 +517,9 @@ router.post('/yields/generate', async (req, res) => {
         const currentYear = new Date().getFullYear();
 
         for (const farm of farms) {
-            // Get products for this farm's sector
             const availableProducts = sectorProducts[farm.sector_id] || [];
             if (availableProducts.length === 0) continue;
 
-            // Parse farm's existing products
             let farmProducts = [];
             try {
                 farmProducts = JSON.parse(farm.products || '[]');
@@ -496,10 +528,7 @@ router.post('/yields/generate', async (req, res) => {
             }
 
             for (let i = 0; i < count; i++) {
-                // Randomly select a product from the sector
                 const randomProduct = availableProducts[Math.floor(Math.random() * availableProducts.length)];
-
-                // If product_id was specified, verify it's available for this farm's sector
                 const selectedProductId = product_id || randomProduct.id;
 
                 if (product_id) {
@@ -510,23 +539,30 @@ router.post('/yields/generate', async (req, res) => {
                     }
                 }
 
-                // Generate random data
+                // Ensure harvested area is > 0 and ≤ farm.area
+                const maxArea = parseFloat(farm.area) || 0;
+                let areaHarvested = 0;
+                if (maxArea > 0) {
+                    // Random between 10% and 100% of maxArea
+                    const minArea = Math.max(0.1 * maxArea, 0.01); // Ensure not zero
+                    areaHarvested = parseFloat((minArea + Math.random() * (maxArea - minArea)).toFixed(2));
+                }
+
+                // Generate other random data
                 const harvestDate = new Date(
-                    year || currentYear - Math.floor(Math.random() * 3), // Current year or up to 3 years back
-                    Math.floor(Math.random() * 12), // Random month
-                    Math.floor(Math.random() * 28) + 1 // Random day (1-28)
+                    year || currentYear - Math.floor(Math.random() * 5),
+                    Math.floor(Math.random() * 12),
+                    Math.floor(Math.random() * 28) + 1
                 ).toISOString().split('T')[0];
 
-                const volume = (Math.random() * 1000).toFixed(2); // 0-1000 with 2 decimal places
-                const value = (volume * (5 + Math.random() * 20)).toFixed(2); // Random price per unit
-                // const statuses = ['Pending', 'Approved', 'Rejected'];
+                const volume = (Math.random() * 1000).toFixed(2);
+                const value = (volume * (5 + Math.random() * 20)).toFixed(2);
                 const status = 'Accepted';
-
                 const notes = Math.random() > 0.7 ?
                     ['Excellent harvest', 'Good quality', 'Average yield', 'Some pest damage'][Math.floor(Math.random() * 4)] :
                     null;
 
-                // Check if product needs to be added to farm
+                // Add product to farm if missing
                 if (!farmProducts.includes(selectedProductId)) {
                     farmProducts.push(selectedProductId);
                     await pool.query(
@@ -535,11 +571,11 @@ router.post('/yields/generate', async (req, res) => {
                     );
                 }
 
-                // Create the yield record
+                // Insert yield record with area_harvested
                 const [result] = await pool.query(
                     `INSERT INTO farmer_yield 
-             (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                     (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status, area_harvested) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [
                         farmer_id,
                         selectedProductId,
@@ -548,27 +584,28 @@ router.post('/yields/generate', async (req, res) => {
                         volume,
                         notes,
                         value,
-                        JSON.stringify([]), // Empty images array
-                        status
+                        JSON.stringify([]),
+                        status,
+                        areaHarvested
                     ]
                 );
 
-                // Get the created record with joins
+                // Fetch created record with joins
                 const [yields] = await pool.query(
                     `SELECT 
-              fy.*,
-              f.firstname,
-              f.middlename,
-              f.surname,
-              f.extension,
-              p.name as product_name,
-              p.sector_id,
-              s.sector_name
-             FROM farmer_yield fy
-             LEFT JOIN farmers f ON fy.farmer_id = f.id
-             LEFT JOIN farm_products p ON fy.product_id = p.id
-             LEFT JOIN sectors s ON p.sector_id = s.sector_id
-             WHERE fy.id = ?`,
+                        fy.*,
+                        f.firstname,
+                        f.middlename,
+                        f.surname,
+                        f.extension,
+                        p.name as product_name,
+                        p.sector_id,
+                        s.sector_name
+                     FROM farmer_yield fy
+                     LEFT JOIN farmers f ON fy.farmer_id = f.id
+                     LEFT JOIN farm_products p ON fy.product_id = p.id
+                     LEFT JOIN sectors s ON p.sector_id = s.sector_id
+                     WHERE fy.id = ?`,
                     [result.insertId]
                 );
 
@@ -586,7 +623,8 @@ router.post('/yields/generate', async (req, res) => {
                     value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
                     status: yieldItem.status || null,
                     sectorId: yieldItem.sector_id,
-                    sector: yieldItem.sector_name
+                    sector: yieldItem.sector_name,
+                    areaHarvested: yieldItem.area_harvested ? parseFloat(yieldItem.area_harvested) : null
                 });
             }
         }
@@ -606,6 +644,9 @@ router.post('/yields/generate', async (req, res) => {
     }
 });
 
+
+
+
 // Create a new yield record
 router.post('/yields', authenticate, async (req, res) => {
     try {
@@ -615,6 +656,7 @@ router.post('/yields', authenticate, async (req, res) => {
             harvest_date,
             farm_id,
             volume,
+            area_harvested,
             notes,
             value,
             images
@@ -666,8 +708,8 @@ router.post('/yields', authenticate, async (req, res) => {
         // Proceed with creating the yield record
         const [result] = await pool.query(
             `INSERT INTO farmer_yield 
-         (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (farmer_id, product_id, harvest_date, farm_id, volume, notes, Value, images, status ,area_harvested) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ? , ? )`,
             [
                 farmer_id,
                 product_id,
@@ -677,7 +719,8 @@ router.post('/yields', authenticate, async (req, res) => {
                 notes,
                 value,
                 JSON.stringify(images),
-                defaultStatus  // Use the determined default status
+                defaultStatus , // Use the determined default status 
+                area_harvested
             ]
         );
 
@@ -710,6 +753,7 @@ router.post('/yields', authenticate, async (req, res) => {
                 productId: yieldItem.product_id,
                 productName: yieldItem.product_name,
                 harvestDate: yieldItem.harvest_date,
+                area_harvested: yieldItem.area_harvested,
                 createdAt: yieldItem.created_at,
                 updatedAt: yieldItem.updated_at,
                 farmId: yieldItem.farm_id,
@@ -971,6 +1015,7 @@ router.get('/farmer-yields/:farmerId?', async (req, res) => {
           fy.created_at,
           fy.updated_at,
           fy.farm_id,
+          fy.area_harvested,
           fy.volume,
           fy.notes,
           fy.Value,
@@ -1022,6 +1067,7 @@ router.get('/farmer-yields/:farmerId?', async (req, res) => {
                 updatedAt: yieldItem.updated_at,
                 farmId: yieldItem.farm_id,
                 farmName: yieldItem.farm_name,
+                area_harvested: yieldItem.area_harvested,
                 farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
                 volume: parseFloat(yieldItem.volume),
                 notes: yieldItem.notes || null,
