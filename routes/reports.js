@@ -10,6 +10,7 @@ const pool = require('../connect');
 
 
 
+
 router.get('/sector-yields-report', async (req, res) => {
     try {
         // Extract and clean the IDs
@@ -38,6 +39,7 @@ router.get('/sector-yields-report', async (req, res) => {
             NULL as harvest_date,
             NULL as volume,
             NULL as Value,
+            NULL as area_harvested,
             NULL as harvest_year,
             NULL as harvest_month
         `;
@@ -51,6 +53,7 @@ router.get('/sector-yields-report', async (req, res) => {
                 NULL as harvest_date,
                 COALESCE(SUM(fy.volume), 0) as volume,
                 COALESCE(SUM(fy.Value), 0) as Value,
+                COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
                 YEAR(fy.harvest_date) as harvest_year,
                 MONTH(fy.harvest_date) as harvest_month,
                 DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
@@ -66,6 +69,7 @@ router.get('/sector-yields-report', async (req, res) => {
                 NULL as harvest_date,
                 COALESCE(SUM(fy.volume), 0) as volume,
                 COALESCE(SUM(fy.Value), 0) as Value,
+                COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
                 YEAR(fy.harvest_date) as harvest_year,
                 MONTH(fy.harvest_date) as harvest_month,
                 DATE_FORMAT(fy.harvest_date, '%Y') as year,
@@ -83,6 +87,7 @@ router.get('/sector-yields-report', async (req, res) => {
                 fy.harvest_date,
                 fy.volume,
                 fy.Value,
+                fy.area_harvested,
                 YEAR(fy.harvest_date) as harvest_year,
                 MONTH(fy.harvest_date) as harvest_month
             `;
@@ -158,7 +163,6 @@ router.get('/sector-yields-report', async (req, res) => {
         let formattedYields;
         if (viewBy === 'Monthly') {
             formattedYields = yields.map(yield => ({
-                // sector_id: yield.sector_id,
                 sector_name: yield.sector_name,
                 period: yield.month_year,
                 harvest_date: `${yield.month_name} ${yield.harvest_year}`,
@@ -168,13 +172,13 @@ router.get('/sector-yields-report', async (req, res) => {
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
+                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
                 year: yield.harvest_year,
                 month: yield.harvest_month,
                 month_name: yield.month_name,
             }));
         } else if (viewBy === 'Yearly') {
             formattedYields = yields.map(yield => ({
-                // sector_id: yield.sector_id,
                 sector_name: yield.sector_name,
                 period: yield.year,
                 harvest_date: yield.year_display,
@@ -184,6 +188,7 @@ router.get('/sector-yields-report', async (req, res) => {
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
+                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
                 year: yield.harvest_year,
                 month: yield.harvest_month,
                 month_name: yield.month_name,
@@ -192,15 +197,13 @@ router.get('/sector-yields-report', async (req, res) => {
         } else {
             // Individual entries
             formattedYields = yields.map(yield => ({
-                // sector_id: yield.sector_id,
-                // test:"w",
                 sector_name: yield.sector_name,
                 product: yield.product_name,
                 harvest_date: yield.harvest_date ? 
-                    new Date(yield.harvest_date).toISOString().split('T')[0] : // Formats as YYYY-MM-DD
-                    null,
+                    new Date(yield.harvest_date).toISOString().split('T')[0] : null,
                 volume: parseFloat(yield.volume || 0),
                 value: parseFloat(yield.Value || 0),
+                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0)
             }));
         }
 
@@ -212,7 +215,6 @@ router.get('/sector-yields-report', async (req, res) => {
                 const key = `${yield.sector_id}_${yield.period}`;
                 if (!groupedData[key]) {
                     groupedData[key] = {
-                        // sector_id: yield.sector_id,
                         sector_name: yield.sector_name,
                         period: yield.period,
                         period_display: viewBy === 'Monthly' ? `${yield.month_name} ${yield.year}` : yield.year_display,
@@ -221,11 +223,11 @@ router.get('/sector-yields-report', async (req, res) => {
                         month_name: yield.month_name,
                         total_volume: 0,
                         total_value: 0,
-                        products: [] // Initialize as array to collect product names
+                        total_area_harvested: 0,
+                        products: []
                     };
                 }
                 
-                // Add product name to array if it exists and isn't already included
                 if (yield.product && yield.product.name) {
                     if (!groupedData[key].products.includes(yield.product.name)) {
                         groupedData[key].products.push(yield.product.name);
@@ -234,11 +236,11 @@ router.get('/sector-yields-report', async (req, res) => {
                 
                 groupedData[key].total_volume += yield.volume;
                 groupedData[key].total_value += yield.total_value;
+                groupedData[key].total_area_harvested += yield.area_harvested;
             });
 
             // Convert to array format
             formattedYields = Object.values(groupedData).map(item => ({
-                // sector_id: item.sector_id,
                 sector_name: item.sector_name,
                 period: item.period,
                 period_display: item.period_display,
@@ -247,8 +249,9 @@ router.get('/sector-yields-report', async (req, res) => {
                 month_name: item.month_name,
                 volume: item.total_volume,
                 total_value: item.total_value,
+                area_harvested: item.total_area_harvested,
                 harvest_date: item.period_display,
-                product: item.products.join(', ') // Combine array into single string
+                product: item.products.join(', ')
             }));
         }
 
@@ -285,6 +288,7 @@ router.get('/sector-yields-report', async (req, res) => {
 
 
 
+
 router.get('/barangay-yields-report', async (req, res) => {
     try {
         // Extract and clean the IDs
@@ -313,6 +317,7 @@ router.get('/barangay-yields-report', async (req, res) => {
             NULL as harvest_date,
             NULL as volume,
             NULL as Value,
+            NULL as area_harvested,
             NULL as harvest_year,
             NULL as harvest_month
         `;
@@ -325,6 +330,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 NULL as harvest_date,
                 COALESCE(SUM(fy.volume), 0) as volume,
                 COALESCE(SUM(fy.Value), 0) as Value,
+                COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
                 YEAR(fy.harvest_date) as harvest_year,
                 MONTH(fy.harvest_date) as harvest_month,
                 DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
@@ -339,6 +345,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 NULL as harvest_date,
                 COALESCE(SUM(fy.volume), 0) as volume,
                 COALESCE(SUM(fy.Value), 0) as Value,
+                COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
                 YEAR(fy.harvest_date) as harvest_year,
                 MONTH(fy.harvest_date) as harvest_month,
                 DATE_FORMAT(fy.harvest_date, '%Y') as year,
@@ -355,6 +362,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 fy.harvest_date,
                 fy.volume,
                 fy.Value,
+                fy.area_harvested,
                 YEAR(fy.harvest_date) as harvest_year,
                 MONTH(fy.harvest_date) as harvest_month
             `;
@@ -431,7 +439,6 @@ router.get('/barangay-yields-report', async (req, res) => {
 
         const [yields] = await pool.query(query, params);
  
- 
         // Format response
         let formattedYields;
         if (viewBy === 'Monthly') {
@@ -445,6 +452,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
+                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
                 year: yield.harvest_year,
                 month: yield.harvest_month,
                 month_name: yield.month_name,
@@ -460,6 +468,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
+                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
                 year: yield.harvest_year,
                 month: yield.harvest_month,
                 month_name: yield.month_name,
@@ -470,13 +479,11 @@ router.get('/barangay-yields-report', async (req, res) => {
             formattedYields = yields.map(yield => ({
                 barangay: yield.barangay_name,
                 product: yield.product_name,
-                  harvest_date: yield.harvest_date ? 
-            new Date(yield.harvest_date).toISOString().split('T')[0] : // Formats as YYYY-MM-DD
-            null,
-                
+                harvest_date: yield.harvest_date ? 
+                    new Date(yield.harvest_date).toISOString().split('T')[0] : null,
                 volume: parseFloat(yield.volume || 0),
-                value: parseFloat(yield.Value || 0), 
-             
+                value: parseFloat(yield.Value || 0),
+                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0)
             }));
         }
 
@@ -496,11 +503,11 @@ router.get('/barangay-yields-report', async (req, res) => {
                         month_name: yield.month_name,
                         total_volume: 0,
                         total_value: 0,
-                        products: [] // Initialize as array to collect product names
+                        total_area_harvested: 0,
+                        products: []
                     };
                 }
                 
-                // Add product name to array if it exists and isn't already included
                 if (yield.product && yield.product.name) {
                     if (!groupedData[key].products.includes(yield.product.name)) {
                         groupedData[key].products.push(yield.product.name);
@@ -509,6 +516,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 
                 groupedData[key].total_volume += yield.volume;
                 groupedData[key].total_value += yield.total_value;
+                groupedData[key].total_area_harvested += yield.area_harvested;
             });
 
             // Convert to array format
@@ -521,8 +529,9 @@ router.get('/barangay-yields-report', async (req, res) => {
                 month_name: item.month_name,
                 volume: item.total_volume,
                 total_value: item.total_value,
+                area_harvested: item.total_area_harvested,
                 harvest_date: item.period_display,
-                product: item.products.join(', ') // Combine array into single string
+                product: item.products.join(', ')
             }));
         }
 
@@ -560,26 +569,23 @@ router.get('/barangay-yields-report', async (req, res) => {
 
 
 
-  router.get('/farmer-yields-report', async (req, res) => {
+router.get('/farmer-yields-report', async (req, res) => {
     try {
       // Extract and clean the IDs
       const farmerId = req.query.farmerId ? req.query.farmerId.split(':')[0].trim() : null;
       const barangayName = req.query.barangayName ? req.query.barangayName.trim() : null;
       const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
-      const associationId = req.query.associationId ? req.query.associationId.split(':')[0].trim() : null; // Added association filter
+      const associationId = req.query.associationId ? req.query.associationId.split(':')[0].trim() : null;
       const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
   
       const count = countParam === 'all' ? null : parseInt(countParam);
       const limitCount = Number.isInteger(count) && count > 0 ? count : null;
   
       // Other params
-  
       const { startDate, endDate, viewBy } = req.query;
   
       // Validate date range
       const dateRangeValid = startDate && endDate && startDate !== endDate;
-  
-      
   
       // Base query with optional filters
       let query = `
@@ -599,6 +605,7 @@ router.get('/barangay-yields-report', async (req, res) => {
           fy.status,
           fy.volume,
           fy.Value,
+          fy.area_harvested,   
           YEAR(fy.harvest_date) as harvest_year,
           MONTH(fy.harvest_date) as harvest_month,
           farm.farm_id
@@ -642,7 +649,6 @@ router.get('/barangay-yields-report', async (req, res) => {
   
       if (conditions.length > 0) {
         query += ' WHERE ' + conditions.join(' AND ');
-      } else {
       }
   
       // Handle viewBy options
@@ -663,6 +669,7 @@ router.get('/barangay-yields-report', async (req, res) => {
             NULL as harvest_date,
             SUM(fy.volume) as volume,
             SUM(fy.Value) as Value,
+            SUM(fy.area_harvested) as area_harvested,  // Added this field with SUM
             YEAR(fy.harvest_date) as harvest_year,
             MONTH(fy.harvest_date) as harvest_month,
             DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
@@ -695,6 +702,7 @@ router.get('/barangay-yields-report', async (req, res) => {
             NULL as harvest_date,
             SUM(fy.volume) as volume,
             SUM(fy.Value) as Value,
+            SUM(fy.area_harvested) as area_harvested,  // Added this field with SUM
             YEAR(fy.harvest_date) as harvest_year,
             NULL as harvest_month,
             YEAR(fy.harvest_date) as year,
@@ -713,13 +721,11 @@ router.get('/barangay-yields-report', async (req, res) => {
         query += ' ORDER BY fy.harvest_date DESC, farmer_name, product_name, association_name';
       }
   
-       // Add LIMIT clause if count is specified
-       if (limitCount !== null) {
+      // Add LIMIT clause if count is specified
+      if (limitCount !== null) {
         query += ' LIMIT ?';
         params.push(limitCount);
       }
-  
-      
   
       const [yields] = await pool.query(query, params);
   
@@ -731,8 +737,9 @@ router.get('/barangay-yields-report', async (req, res) => {
           barangay: yield.barangay_name,
           product: yield.product_name,
           association: yield.association_name || 'None',
-          volume: parseFloat(yield.volume) || 0, 
-          total_value: yield.Value ? parseFloat(yield.Value) : null
+          volume: parseFloat(yield.volume) || 0,
+          total_value: yield.Value ? parseFloat(yield.Value) : null,
+          area_harvested: yield.area_harvested ? parseFloat(yield.area_harvested) : null  // Added this field
         };
   
         if (viewBy === 'Monthly') {
@@ -779,7 +786,7 @@ router.get('/barangay-yields-report', async (req, res) => {
           startDate: dateRangeValid ? startDate : 'all',
           endDate: dateRangeValid ? endDate : 'all',
           viewBy: viewBy || 'individual',
-            count: limitCount !== null ? limitCount : 'all'
+          count: limitCount !== null ? limitCount : 'all'
         },
         count: formattedYields.length,
         yields: formattedYields
@@ -798,6 +805,9 @@ router.get('/barangay-yields-report', async (req, res) => {
       });
     }
   });
+
+
+
 
 
 
@@ -955,6 +965,7 @@ router.get('/farmers-report', async (req, res) => {
         fy.volume,
         fy.Value,
         fy.status,
+        fy.area_harvested,
         YEAR(fy.harvest_date) as harvest_year,
         MONTH(fy.harvest_date) as harvest_month,
         farm.farm_name,
@@ -971,6 +982,7 @@ router.get('/farmers-report', async (req, res) => {
           NULL as harvest_date,
           SUM(fy.volume) as volume,
           SUM(fy.Value) as Value,
+          SUM(fy.area_harvested) as area_harvested, 
           YEAR(fy.harvest_date) as harvest_year,
           MONTH(fy.harvest_date) as harvest_month,
           DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
@@ -988,6 +1000,7 @@ router.get('/farmers-report', async (req, res) => {
           p.sector_id,
           s.sector_name,
           NULL as harvest_date,
+          SUM(fy.area_harvested) as area_harvested,
           SUM(fy.volume) as volume,
           SUM(fy.Value) as Value,
           YEAR(fy.harvest_date) as harvest_year,
@@ -1077,6 +1090,7 @@ router.get('/farmers-report', async (req, res) => {
             sector: yield.sector_name,
             volume: parseFloat(yield.volume),
             total_value: yield.Value ? parseFloat(yield.Value) : null,
+           area_harvested: yield.area_harvested ? parseFloat(yield.area_harvested.toFixed(2)) : null,
             harvest_date: formattedDate,
             year: yield.harvest_year,
             month: yield.harvest_month,
@@ -1097,6 +1111,7 @@ router.get('/farmers-report', async (req, res) => {
             product: yield.product_name,
             sector: yield.sector_name,
             volume: parseFloat(yield.volume),
+            area_harvested: yield.area_harvested ? parseFloat(yield.area_harvested.toFixed(2)) : null, // Added area harvested
             total_value: yield.Value ? parseFloat(yield.Value) : null,
             harvest_date: formattedDate,
             year: yield.harvest_year,
@@ -1118,6 +1133,7 @@ router.get('/farmers-report', async (req, res) => {
             product: yield.product_name,
             sector: yield.sector_name,
             harvest_date: formattedDate,
+            area_harvested: yield.area_harvested ? parseFloat(yield.area_harvested.toFixed(2)) : null, // Added area harvested
             volume: parseFloat(yield.volume),
             value: yield.Value ? parseFloat(yield.Value) : null,
             farm_name: yield.farm_name,

@@ -2020,9 +2020,6 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
 
 
-
-
-
 router.get('/sectors', async (req, res) => {
   try {
     const { year } = req.query;
@@ -2050,7 +2047,8 @@ router.get('/sectors', async (req, res) => {
           totalFarms: 0,
           totalYields: 0,
           totalYieldVolume: 0,
-          totalYieldValue: 0
+          totalYieldValue: 0,
+          totalMetricTons: 0
         }
       });
     }
@@ -2067,14 +2065,15 @@ router.get('/sectors', async (req, res) => {
       GROUP BY s.sector_id
     `);
 
-    // 3. Yield stats query (now includes area_harvested)
+    // 3. Yield stats query (now includes area_harvested and metric tons)
     let yieldStatsQuery = `
       SELECT 
         fp.sector_id,
         COUNT(DISTINCT fy.id) AS yield_count,
         SUM(fy.volume) AS total_volume,
         SUM(fy.Value) AS total_value,
-        SUM(fy.area_harvested) AS total_area_harvested
+        SUM(fy.area_harvested) AS total_area_harvested,
+        SUM(fy.volume) / 1000 AS total_metric_tons  -- Convert kg to metric tons (1000kg = 1 metric ton)
       FROM farmer_yield fy
       JOIN farm_products fp ON fy.product_id = fp.id
       JOIN sectors s ON fp.sector_id = s.sector_id
@@ -2091,7 +2090,7 @@ router.get('/sectors', async (req, res) => {
       ? await pool.query(yieldStatsQuery, [year])
       : await pool.query(yieldStatsQuery);
 
-    // 4. Totals query (added total_area_harvested)
+    // 4. Totals query (added total_area_harvested and total_metric_tons)
     let totalsQuery = `
       SELECT 
         COUNT(DISTINCT f.farmer_id) AS total_farmers,
@@ -2100,7 +2099,8 @@ router.get('/sectors', async (req, res) => {
         SUM(fy.area_harvested) AS total_area_harvested,
         COUNT(DISTINCT fy.id) AS total_yields,
         SUM(fy.volume) AS total_yield_volume,
-        SUM(fy.Value) AS total_yield_value
+        SUM(fy.Value) AS total_yield_value,
+        SUM(fy.volume) / 1000 AS total_metric_tons
       FROM farms f
       LEFT JOIN farmer_yield fy 
         ON f.farm_id = fy.farm_id 
@@ -2115,7 +2115,7 @@ router.get('/sectors', async (req, res) => {
       ? await pool.query(totalsQuery, [year])
       : await pool.query(totalsQuery);
 
-    // 5. Combine sector info with stats (added totalAreaHarvested)
+    // 5. Combine sector info with stats (added totalAreaHarvested and metricTons)
     const processedSectors = sectors.map(sector => {
       const farmStat = farmStats.find(stat => stat.sector_id === sector.sector_id) || {};
       const yieldStat = yieldStats.find(stat => stat.sector_id === sector.sector_id) || {};
@@ -2126,19 +2126,20 @@ router.get('/sectors', async (req, res) => {
         description: sector.description,
         createdAt: sector.created_at,
         updatedAt: sector.updated_at,
-        stats: {
+        stats: {  
           totalLandArea: farmStat.total_area ? parseFloat(farmStat.total_area) : 0,
-          totalAreaHarvested: yieldStat.total_area_harvested ? parseFloat(yieldStat.total_area_harvested) : 0,
+          totalAreaHarvested: yieldStat.total_area_harvested ? parseFloat(yieldStat.total_area_harvested.toFixed(2)) : 0,
           totalFarmers: farmStat.farmer_count ? parseInt(farmStat.farmer_count) : 0,
           totalFarms: farmStat.farm_count ? parseInt(farmStat.farm_count) : 0,
           totalYields: yieldStat.yield_count ? parseInt(yieldStat.yield_count) : 0,
           totalYieldVolume: yieldStat.total_volume ? parseFloat(yieldStat.total_volume) : 0,
-          totalYieldValue: yieldStat.total_value ? parseFloat(yieldStat.total_value) : 0
+          totalYieldValue: yieldStat.total_value ? parseFloat(yieldStat.total_value) : 0,
+          metricTons: yieldStat.total_metric_tons ? parseFloat(yieldStat.total_metric_tons) : 0
         }
       };
     });
 
-    // 6. Prepare totals data (added totalAreaHarvested)
+    // 6. Prepare totals data (added totalAreaHarvested and totalMetricTons)
     const processedTotals = {
       totalLandArea: totals[0].total_land_area ? parseFloat(totals[0].total_land_area) : 0,
       totalAreaHarvested: totals[0].total_area_harvested ? parseFloat(totals[0].total_area_harvested) : 0,
@@ -2146,7 +2147,8 @@ router.get('/sectors', async (req, res) => {
       totalFarms: totals[0].total_farms ? parseInt(totals[0].total_farms) : 0,
       totalYields: totals[0].total_yields ? parseInt(totals[0].total_yields) : 0,
       totalYieldVolume: totals[0].total_yield_volume ? parseFloat(totals[0].total_yield_volume) : 0,
-      totalYieldValue: totals[0].total_yield_value ? parseFloat(totals[0].total_yield_value) : 0
+      totalYieldValue: totals[0].total_yield_value ? parseFloat(totals[0].total_yield_value) : 0,
+      totalMetricTons: totals[0].total_metric_tons ? parseFloat(totals[0].total_metric_tons) : 0
     };
 
     // 7. Response
@@ -2170,7 +2172,6 @@ router.get('/sectors', async (req, res) => {
     });
   }
 });
-
 
 
 

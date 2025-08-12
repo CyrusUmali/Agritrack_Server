@@ -390,6 +390,7 @@ router.get('/yields/farm/:farmId', async (req, res) => {
           fy.harvest_date,
           fy.created_at,
           fy.updated_at,
+          fy.area_harvested,
           fy.farm_id,
           fy.volume,
           fy.notes,
@@ -427,6 +428,8 @@ router.get('/yields/farm/:farmId', async (req, res) => {
                 productName: yieldItem.product_name,
                 productImage: yieldItem.product_imgUrl,
                 harvestDate: yieldItem.harvest_date,
+                
+                area_harvested: yieldItem.area_harvested ? parseFloat(yieldItem.area_harvested) : null,
                 createdAt: yieldItem.created_at,
                 updatedAt: yieldItem.updated_at,
                 farmId: yieldItem.farm_id,
