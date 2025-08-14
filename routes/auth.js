@@ -1582,7 +1582,7 @@ router.post('/register-farmer', async (req, res) => {
       (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, 
        sex, civil_status, spouse_name, house_hold_head, household_num, 
        male_members_num, female_members_num, mother_maiden_name, religion, address, 
-       person_to_notify, ptn_contact, ptn_relationship, sector_id, assoc_id, imgUrl, created_at, updated_at) 
+       person_to_notify, ptn_contact, ptn_relationship, sector_id, assoc_id, imageUrl, created_at, updated_at) 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         mysqlUserInsertResult.insertId,
