@@ -307,6 +307,7 @@ router.get('/barangay/:barangay', async (req, res) => {
                 fy.notes,
                 fy.Value,
                 fy.images,
+                fy.area_harvested,
                 fy.status,
                 f.barangay as farmer_barangay,
                 f.firstname,
@@ -350,6 +351,7 @@ router.get('/barangay/:barangay', async (req, res) => {
                 images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
                 status: yieldItem.status || null,
                 farmerBarangay: yieldItem.farmer_barangay,
+                area_harvested: yieldItem.area_harvested ? parseFloat(yieldItem.area_harvested) : null,
                 farmBarangay: yieldItem.parentBarangay,
                 sectorId: yieldItem.sector_id,
                 sector: yieldItem.sector_name || 'dummy'

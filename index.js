@@ -68,9 +68,33 @@ app.use('/auth', authRoutes);
 const yieldsRoutes = require('./routes/yields.js');
 app.use('/yields', yieldsRoutes);
 
+  
+// Assocs routes
+const assocsRoutes = require('./routes/assocs.js');
+app.use('/assocs', assocsRoutes);
+
 // Report routes
 const reportRoutes = require('./routes/reports.js');
 app.use('/reports', reportRoutes);
+
+
+// Farmer routes
+const farmerRoutes = require('./routes/farmers.js');
+app.use('/farmers', farmerRoutes);
+
+
+// Sector routes
+const sectorRoutes = require('./routes/sectors.js');
+app.use('/sectors', sectorRoutes);
+
+
+// Farm routes
+const farmtRoutes = require('./routes/farms.js');
+app.use('/farms', farmtRoutes);
+
+// Product routes
+const productRoutes = require('./routes/products.js');
+app.use('/products', productRoutes);
 
 // Wake-up endpoint
 app.get('/wakeup', (req, res) => {
