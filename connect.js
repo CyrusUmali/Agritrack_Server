@@ -10,12 +10,12 @@ const pool = mysql.createPool({
   password: process.env.MYSQL_PASSWORD  , 
   database: process.env.MYSQL_DATABASE  ,
   port: process.env.MYSQL_PORT || 3306,
-  waitForConnections: true,
-  connectionLimit: 5,
+  waitForConnections: true, 
+  connectionLimit: 5, 
   queueLimit: 0
 });
 
-// Test connection
+// Test connection  
 pool.getConnection()
   .then(connection => {
     console.log('Connected to MySQL database');

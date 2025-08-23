@@ -4,6 +4,7 @@ const router = express.Router();
 const authenticate = require('../middleware/firebase-auth-middleware');
 const admin = require('firebase-admin');
 const pool = require('../connect');
+const { area120tables } = require('googleapis/build/src/apis/area120tables');
 
 
 
@@ -231,6 +232,7 @@ router.get('/yields/product/:productId', async (req, res) => {
           fy.Value,
           fy.images,
           fy.status,
+          fy.area_harvested,
           f.barangay,
           f.firstname,
           f.middlename,
@@ -257,7 +259,8 @@ router.get('/yields/product/:productId', async (req, res) => {
                 farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
                 productId: yieldItem.product_id,
                 productName: yieldItem.product_name,
-                harvestDate: yieldItem.harvest_date,
+                harvestDate: yieldItem.harvest_date, 
+                area_harvested: yieldItem.area_harvested ? parseFloat(parseFloat(yieldItem.area_harvested)) : null, 
                 createdAt: yieldItem.created_at,
                 updatedAt: yieldItem.updated_at,
                 farmId: yieldItem.farm_id,

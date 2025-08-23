@@ -80,7 +80,7 @@ router.get('/sectors/stats', async (req, res) => {
       }
     });
   }
-});
+}); 
 
 
 router.get('/sectors', async (req, res) => {

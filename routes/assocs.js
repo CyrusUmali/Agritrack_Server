@@ -6,7 +6,8 @@ const admin = require('firebase-admin');
 const pool = require('../connect');
 
  
-   
+
+
 router.get('/associations', async (req, res) => {
   try {
     const { year } = req.query;
@@ -37,7 +38,9 @@ router.get('/associations', async (req, res) => {
           avgFarmSize: 0,
           totalYields: 0,
           totalYieldVolume: 0,
-          totalYieldValue: 0
+          totalYieldValue: 0,
+          totalAreaHarvested: 0,
+          totalMetricTons: 0
         },
         topAssociation: null
       });
@@ -50,17 +53,37 @@ router.get('/associations', async (req, res) => {
         COUNT(DISTINCT f.id) as total_farmers,
         COUNT(DISTINCT fm.farm_id) as total_farms,
         SUM(fm.area) as total_land_area,
-        AVG(fm.area) as avg_farm_size,
-        COUNT(DISTINCT fy.id) as total_yields,
-        SUM(fy.volume) as total_yield_volume,
-        SUM(fy.Value) as total_yield_value
+        AVG(fm.area) as avg_farm_size
       FROM farmers f
       LEFT JOIN farms fm ON f.id = fm.farmer_id
-      LEFT JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
       WHERE f.assoc_id IS NOT NULL
-      ${year ? 'AND YEAR(fy.harvest_date) = ?' : ''}
       GROUP BY f.assoc_id
-    `, year ? [year] : []);
+    `);
+
+    // Get yield statistics including area harvested and metric tons
+    let yieldStatsQuery = `
+      SELECT 
+        f.assoc_id as associationId,
+        COUNT(DISTINCT fy.id) as total_yields,
+        SUM(fy.volume) as total_yield_volume,
+        SUM(fy.Value) as total_yield_value,
+        SUM(fy.area_harvested) as total_area_harvested,
+        SUM(fy.volume) / 1000 as total_metric_tons
+      FROM farmers f
+      JOIN farms fm ON f.id = fm.farmer_id
+      JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
+      WHERE f.assoc_id IS NOT NULL AND fy.status = 'Accepted'
+    `;
+
+    if (year) {
+      yieldStatsQuery += ` AND YEAR(fy.harvest_date) = ?`;
+    }
+
+    yieldStatsQuery += ` GROUP BY f.assoc_id`;
+
+    const [yieldStats] = year 
+      ? await pool.query(yieldStatsQuery, [year])
+      : await pool.query(yieldStatsQuery);
 
     // Get previous year stats for growth calculation if year is provided
     let growthMetricsMap = {};
@@ -70,25 +93,29 @@ router.get('/associations', async (req, res) => {
         SELECT 
           f.assoc_id as associationId,
           SUM(fy.volume) as total_yield_volume,
-          SUM(fy.Value) as total_yield_value
+          SUM(fy.Value) as total_yield_value,
+          SUM(fy.area_harvested) as total_area_harvested
         FROM farmers f
         JOIN farms fm ON f.id = fm.farmer_id
         JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
-        WHERE f.assoc_id IS NOT NULL AND YEAR(fy.harvest_date) = ?
+        WHERE f.assoc_id IS NOT NULL AND YEAR(fy.harvest_date) = ? AND fy.status = 'Accepted'
         GROUP BY f.assoc_id
       `, [prevYear]);
 
       prevYearStats.forEach(row => {
-        const currentStats = associationStats.find(s => s.associationId === row.associationId);
-        if (currentStats) {
-          const currentVol = currentStats.total_yield_volume || 0;
+        const currentYieldStats = yieldStats.find(s => s.associationId === row.associationId);
+        if (currentYieldStats) {
+          const currentVol = currentYieldStats.total_yield_volume || 0;
           const prevVol = row.total_yield_volume || 0;
-          const currentVal = currentStats.total_yield_value || 0;
+          const currentVal = currentYieldStats.total_yield_value || 0;
           const prevVal = row.total_yield_value || 0;
+          const currentArea = currentYieldStats.total_area_harvested || 0;
+          const prevArea = row.total_area_harvested || 0;
 
           growthMetricsMap[row.associationId] = {
             yieldVolumeGrowth: prevVol ? ((currentVol - prevVol) / prevVol * 100) : 0,
-            yieldValueGrowth: prevVal ? ((currentVal - prevVal) / prevVal * 100) : 0
+            yieldValueGrowth: prevVal ? ((currentVal - prevVal) / prevVal * 100) : 0,
+            areaHarvestedGrowth: prevArea ? ((currentArea - prevArea) / prevArea * 100) : 0
           };
         }
       });
@@ -100,11 +127,13 @@ router.get('/associations', async (req, res) => {
         f.assoc_id as associationId,
         YEAR(fy.harvest_date) as year,
         SUM(fy.volume) as total_volume,
-        SUM(fy.Value) as total_value
+        SUM(fy.Value) as total_value,
+        SUM(fy.area_harvested) as total_area_harvested,
+        SUM(fy.volume) / 1000 as total_metric_tons
       FROM farmers f
       JOIN farms fm ON f.id = fm.farmer_id
       JOIN farmer_yield fy ON fm.farm_id = fy.farm_id
-      WHERE f.assoc_id IS NOT NULL
+      WHERE f.assoc_id IS NOT NULL AND fy.status = 'Accepted'
       GROUP BY f.assoc_id, YEAR(fy.harvest_date)
       ORDER BY f.assoc_id, year DESC
     `);
@@ -118,13 +147,16 @@ router.get('/associations', async (req, res) => {
       annualYieldMap[row.associationId].push({
         year: row.year,
         totalVolume: parseFloat(row.total_volume),
-        totalValue: parseFloat(row.total_value)
+        totalValue: parseFloat(row.total_value),
+        totalAreaHarvested: parseFloat(row.total_area_harvested),
+        metricTons: parseFloat(row.total_metric_tons)
       });
     });
 
     // Enhance associations with stats
     const enhancedAssociations = associations.map(assoc => {
       const stats = associationStats.find(s => s.associationId === assoc.id) || {};
+      const yieldStat = yieldStats.find(s => s.associationId === assoc.id) || {};
       const growthMetrics = growthMetricsMap[assoc.id] || {};
       const annualYield = annualYieldMap[assoc.id] ? 
         annualYieldMap[assoc.id].slice(0, 5).sort((a, b) => b.year - a.year) : [];
@@ -140,9 +172,12 @@ router.get('/associations', async (req, res) => {
           totalFarms: stats.total_farms ? parseInt(stats.total_farms) : 0,
           totalLandArea: stats.total_land_area ? parseFloat(stats.total_land_area) : 0,
           avgFarmSize: stats.avg_farm_size ? parseFloat(stats.avg_farm_size) : 0,
-          totalYields: stats.total_yields ? parseInt(stats.total_yields) : 0,
-          totalYieldVolume: stats.total_yield_volume ? parseFloat(stats.total_yield_volume) : 0,
-          totalYieldValue: stats.total_yield_value ? parseFloat(stats.total_yield_value) : 0,
+          totalYields: yieldStat.total_yields ? parseInt(yieldStat.total_yields) : 0,
+          totalYieldVolume: yieldStat.total_yield_volume ? parseFloat(yieldStat.total_yield_volume) : 0,
+          totalYieldValue: yieldStat.total_yield_value ? parseFloat(yieldStat.total_yield_value) : 0,
+ totalAreaHarvested: yieldStat.total_area_harvested ? 
+    parseFloat(parseFloat(yieldStat.total_area_harvested).toFixed(2)) : 0,
+          metricTons: yieldStat.total_metric_tons ? parseFloat(yieldStat.total_metric_tons) : 0,
           ...growthMetrics
         },
         annualYield
@@ -160,7 +195,9 @@ router.get('/associations', async (req, res) => {
       avgFarmSize: enhancedAssociations.reduce((sum, a) => sum + a.stats.avgFarmSize, 0) / enhancedAssociations.length,
       totalYields: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYields, 0),
       totalYieldVolume: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYieldVolume, 0),
-      totalYieldValue: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYieldValue, 0)
+      totalYieldValue: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalYieldValue, 0),
+      totalAreaHarvested: enhancedAssociations.reduce((sum, a) => sum + a.stats.totalAreaHarvested, 0),
+      totalMetricTons: enhancedAssociations.reduce((sum, a) => sum + a.stats.metricTons, 0)
     };
 
     // Find top association by member count
@@ -174,7 +211,9 @@ router.get('/associations', async (req, res) => {
         name: sortedByMembers[0].name,
         memberCount: sortedByMembers[0].stats.totalFarmers,
         totalLandArea: sortedByMembers[0].stats.totalLandArea,
-        totalYieldValue: sortedByMembers[0].stats.totalYieldValue
+        totalYieldValue: sortedByMembers[0].stats.totalYieldValue,
+        totalAreaHarvested: sortedByMembers[0].stats.totalAreaHarvested,
+        metricTons: sortedByMembers[0].stats.metricTons
       };
     }
 
@@ -199,7 +238,9 @@ router.get('/associations', async (req, res) => {
     });
   }
 });
- 
+
+
+
  
 // Create new association
 router.post('/associations', authenticate, async (req, res) => {
@@ -329,7 +370,7 @@ router.get('/associations/:id', authenticate, async (req, res) => {
     }
 
     res.json({
-      success: true,
+      success: true, 
       association: association[0]
     });
   } catch (error) {
