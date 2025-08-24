@@ -1819,6 +1819,7 @@ router.get('/top-contributors', async (req, res) => {
         f.extension,
         f.barangay,
         SUM(fy.volume) as total_volume,
+        SUM(fy.value) as total_value,
         COUNT(fy.id) as yield_count,
         GROUP_CONCAT(DISTINCT s.sector_name SEPARATOR ', ') as sectors
       FROM farmers f
@@ -1836,7 +1837,7 @@ router.get('/top-contributors', async (req, res) => {
       contributors: contributors.map(contributor => ({
         farmerId: contributor.farmer_id,
         farmerName: `${contributor.firstname}${contributor.middlename ? ' ' + contributor.middlename : ''}${contributor.surname ? ' ' + contributor.surname : ''}${contributor.extension ? ' ' + contributor.extension : ''}`,
-        totalValue: parseFloat(contributor.total_volume) || 0,
+        totalValue: parseFloat(contributor.total_value) || 0,
         yieldCount: contributor.yield_count,
         barangay: contributor.barangay,
         sectors: contributor.sectors
