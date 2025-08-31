@@ -1051,10 +1051,10 @@ router.get('/farmer-yields/:farmerId?', async (req, res) => {
         if (farmerId) {
             query += ` WHERE fy.farmer_id = ? `;
         }
-
+         
+  
         // Changed from harvest_date to created_at for sorting
-        query += ` ORDER BY fy.harvest_date DESC`;
-
+        query += ` ORDER BY fy.created_at DESC`;
         // Execute query with or without farmerId parameter
         const [yields] = farmerId
             ? await pool.query(query, [farmerId])
@@ -1062,8 +1062,7 @@ router.get('/farmer-yields/:farmerId?', async (req, res) => {
 
         res.json({
             success: true,
-            yields: yields.map(yieldItem => ({
-                test: "testssasd",
+            yields: yields.map(yieldItem => ({ 
                 id: yieldItem.id,
                 farmerId: yieldItem.farmer_id,
                 farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
