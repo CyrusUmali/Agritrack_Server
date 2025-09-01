@@ -34,6 +34,12 @@ app.use(cors({
   credentials: true
 }));
 
+
+
+
+// Serve static files from public directory
+app.use(express.static('public'));
+
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -93,6 +99,28 @@ const pingAicropService = async () => {
 // Set up Aicrop ping interval
 const AICROP_PING_INTERVAL = 13 * 60 * 1000; // 13 minutes
 let aicropPingInterval;
+
+
+
+// APK download endpoint
+app.get('/download/apk/:filename', (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(__dirname, 'public', 'apk', filename);
+  
+  // Check if file exists
+  if (fs.existsSync(filePath)) {
+    // Set headers for file download
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+  } else {
+    res.status(404).json({ message: 'APK file not found' });
+  }
+});
+
 
 // API route
 app.get('/api', (req, res) => {
