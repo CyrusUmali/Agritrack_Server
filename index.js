@@ -13,7 +13,7 @@ const allowedOrigins = [
   "http://127.0.0.1:8000/",
   /^http:\/\/192\.168\.38\.197:\d+$/,
   /^http:\/\/localhost:\d+$/,
-  "https://agritrack-theta.vercel.app"
+  "https://agritrack-theta.vercel.app",
   "https://cyrusumali.github.io",
   /^http:\/\/192\.168\.\d+\.\d+:\d+$/,
   /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,
