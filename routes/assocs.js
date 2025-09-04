@@ -8,6 +8,115 @@ const pool = require('../connect');
  
 
 
+
+router.get('/yield-data', async (req, res) => {
+    const { assocId, year } = req.query; // Get both from query params
+
+    try {
+        let query = `
+            SELECT 
+                fy.id,
+                fy.farmer_id,
+                fy.product_id,
+                fy.harvest_date,
+                fy.created_at,
+                fy.updated_at,
+                fy.farm_id,
+                fy.volume,
+                fy.notes,
+                fy.Value,
+                fy.images,
+                fy.area_harvested,
+                fy.status,
+                f.barangay as farmer_barangay,
+                f.assoc_id,
+                f.firstname,
+                f.middlename,
+                f.surname,
+                f.extension,
+                p.name as product_name,
+                p.sector_id,
+                p.imgUrl as product_imgUrl,   
+                s.sector_name,
+                farm.area as farm_area,
+                farm.farm_name,
+                farm.parentBarangay,
+                a.name as association_name
+            FROM farmer_yield fy
+            LEFT JOIN farmers f ON fy.farmer_id = f.id
+            LEFT JOIN farm_products p ON fy.product_id = p.id
+            LEFT JOIN sectors s ON p.sector_id = s.sector_id 
+            LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+            LEFT JOIN associations a ON f.assoc_id = a.id
+            WHERE f.assoc_id = ? AND fy.status = 'Accepted'
+        `;
+
+        const queryParams = [assocId];
+
+        // Add year filter if provided
+        if (year) {
+            query += ` AND YEAR(fy.harvest_date) = ?`;
+            queryParams.push(year);
+        }
+
+        query += ` ORDER BY fy.harvest_date DESC`;
+
+        const [yields] = await pool.query(query, queryParams);
+
+        res.json({
+            success: true,
+            yields: yields.map(yieldItem => ({
+                id: yieldItem.id,
+                farmerId: yieldItem.farmer_id,
+                farmerName: `${yieldItem.firstname}${yieldItem.middlename ? ' ' + yieldItem.middlename : ''}${yieldItem.surname ? ' ' + yieldItem.surname : ''}${yieldItem.extension ? ' ' + yieldItem.extension : ''}`,
+                farmName: yieldItem.farm_name,
+                productId: yieldItem.product_id,
+                productName: yieldItem.product_name,
+                productImage: yieldItem.product_imgUrl,
+                harvestDate: yieldItem.harvest_date,
+                createdAt: yieldItem.created_at,
+                updatedAt: yieldItem.updated_at,
+                farmId: yieldItem.farm_id,
+                farmArea: yieldItem.farm_area ? parseFloat(yieldItem.farm_area) : null,
+                volume: parseFloat(yieldItem.volume),
+                notes: yieldItem.notes || null,
+                value: yieldItem.Value ? parseFloat(yieldItem.Value) : null,
+                images: yieldItem.images ? JSON.parse(yieldItem.images) : null,
+                status: yieldItem.status || null,
+                farmerBarangay: yieldItem.farmer_barangay,
+                area_harvested: yieldItem.area_harvested ? parseFloat(yieldItem.area_harvested) : null,
+                farmBarangay: yieldItem.parentBarangay,
+                sectorId: yieldItem.sector_id,
+                sector: yieldItem.sector_name || 'dummy',
+                associationId: yieldItem.assoc_id,
+                associationName: yieldItem.association_name
+            })),
+            summary: {
+                associationId: assocId,
+                associationName: yields.length > 0 ? yields[0].association_name : 'Unknown Association',
+                totalYields: yields.length,
+                totalVolume: yields.reduce((sum, item) => sum + parseFloat(item.volume), 0),
+                totalValue: yields.reduce((sum, item) => sum + (item.Value ? parseFloat(item.Value) : 0), 0),
+                totalAreaHarvested: yields.reduce((sum, item) => sum + (item.area_harvested ? parseFloat(item.area_harvested) : 0), 0)
+            }
+        });
+    } catch (error) {
+        console.error('Failed to fetch yields by association:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch yields by association',
+            error: {
+                code: 'YIELD_FETCH_BY_ASSOCIATION_ERROR',
+                details: error.message,
+                sqlMessage: error.sqlMessage
+            }
+        });
+    }
+});
+
+
+
+
 router.get('/associations', async (req, res) => {
   try {
     const { year } = req.query;
@@ -238,6 +347,8 @@ router.get('/associations', async (req, res) => {
     });
   }
 });
+
+
 
 
 
