@@ -778,7 +778,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
 
 
-router.post('/register-farmer', async (req, res) => {
+router.post('/register-farmer', authenticate, async (req, res) => {
   let firebaseUser;
   let mysqlUserInsertResult;
   let farmerInsertResult;
@@ -1794,7 +1794,7 @@ function generateOTP() {
  
 
 
-router.get('/top-contributors', async (req, res) => {
+router.get('/top-contributors',authenticate ,async (req, res) => {
   try {
     // First verify basic table access
     const [farmerCount] = await pool.query('SELECT COUNT(*) as count FROM farmers');
@@ -1959,7 +1959,7 @@ router.delete('/users/:id', authenticate, async (req, res) => {
   }
 });   
 
-router.get('/user-statistics', async (req, res) => {
+router.get('/user-statistics',authenticate, async (req, res) => {
   try {
     const { year } = req.query;
 
@@ -2051,3 +2051,4 @@ router.get('/user-statistics', async (req, res) => {
 
  
 module.exports = router;
+async
