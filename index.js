@@ -83,7 +83,7 @@ const startSelfPing = () => {
   
   // Run immediately and then every 14 minutes (Render timeout is 15 min)
   selfPing();
-  selfPingInterval = setInterval(selfPing, 14 * 60 * 1000);
+  selfPingInterval = setInterval(selfPing, 11 * 60 * 1000);
 };
 
 // Function to ping Aicrop service
