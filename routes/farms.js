@@ -9,7 +9,7 @@ const pool = require('../connect');
 
 
 
-router.get('/farm-statistics', async (req, res) => {
+router.get('/farm-statistics', authenticate , async (req, res) => {
   try {
     const { year } = req.query;
     const userSectorId = req.user?.dbUser?.sector_id;
@@ -143,7 +143,7 @@ const getSectorColor = (sectorId) => {
 
 
 
-router.get('/farms-view', async (req, res) => {
+router.get('/farms-view',authenticate ,  async (req, res) => {
   try {
     // Get farmerId from query parameters if it exists
     const { farmerId } = req.query;
@@ -239,7 +239,7 @@ farmQuery += ` ORDER BY f.farm_name ASC`;
 
 
 
-router.get('/farms', async (req, res) => {
+router.get('/farms', authenticate , async (req, res) => {
   try {
     // Get farmerId from query parameters if it exists
     const { farmerId } = req.query;
@@ -334,7 +334,7 @@ router.get('/farms', async (req, res) => {
 });
 
 // DELETE farm by ID
-router.delete('/farms/:id', async (req, res) => {
+router.delete('/farms/:id', authenticate , async (req, res) => {
   const farmId = req.params.id;
 
   if (!farmId) {
@@ -384,7 +384,7 @@ router.delete('/farms/:id', async (req, res) => {
 
 
 // POST create new farm
-router.post('/farms/', async (req, res) => {
+router.post('/farms/', authenticate , async (req, res) => {
   try {
     const {
       name,
@@ -489,7 +489,7 @@ router.post('/farms/', async (req, res) => {
 });
 
 // PUT update farm
-router.put('/farms/:id', async (req, res) => {
+router.put('/farms/:id', authenticate ,  async (req, res) => {
   try {
     const farmId = req.params.id;
     const {
@@ -614,7 +614,7 @@ router.put('/farms/:id', async (req, res) => {
   }
 });
 
-router.put('/farmsProfile/:id', async (req, res) => {
+router.put('/farmsProfile/:id', authenticate , async (req, res) => {
   try {
     const farmId = req.params.id;
     const {
@@ -759,7 +759,7 @@ router.put('/farmsProfile/:id', async (req, res) => {
   
 
 
-router.get('/farms/:id', async (req, res) => {
+router.get('/farms/:id', authenticate , async (req, res) => {
   try {
     const farmId = req.params.id;
 
@@ -855,7 +855,7 @@ router.get('/farms/:id', async (req, res) => {
 
 
 
-router.get('/farms/by-product/:productId', async (req, res) => {
+router.get('/farms/by-product/:productId', authenticate , async (req, res) => {
   try {
     const productId = parseInt(req.params.productId);
     const currentYear = new Date().getFullYear();

@@ -456,7 +456,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
           totalFarms: currentStats[0].total_farms ? parseInt(currentStats[0].total_farms) : 0,
           totalFarmers: currentStats[0].total_farmers ? parseInt(currentStats[0].total_farmers) : 0,
           totalLandArea: currentStats[0].total_land_area ? parseFloat(currentStats[0].total_land_area) : 0,
-          avgFarmSize: currentStats[0].avg_farm_size ? parseFloat(currentStats[0].avg_farm_size) : 0,
+          avgFarmSize: currentStats[0].avg_farm_size ? parseFloat(currentStats[0].avg_farm_size).toFixed(2)   : 0,
           totalYields: currentStats[0].total_yields ? parseInt(currentStats[0].total_yields) : 0,
           totalYieldVolume: currentStats[0].total_yield_volume ? parseFloat(currentStats[0].total_yield_volume) : 0,
           totalYieldValue: currentStats[0].total_yield_value ? parseFloat(currentStats[0].total_yield_value) : 0,

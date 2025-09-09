@@ -12,7 +12,7 @@ const { area120tables } = require('googleapis/build/src/apis/area120tables');
 
 
 
-router.get('/yields/:id', async (req, res) => {
+router.get('/yields/:id', authenticate, async (req, res) => {
     try {
         const [yields] = await pool.query(
             `SELECT 
@@ -72,7 +72,7 @@ router.get('/yields/:id', async (req, res) => {
 
 
 
-router.put('/yields/:id', async (req, res) => {
+router.put('/yields/:id',  authenticate ,  async (req, res) => {
     try {
         const {
             farmer_id,
@@ -194,7 +194,7 @@ router.put('/yields/:id', async (req, res) => {
 
 
 // Delete a yield record
-router.delete('/yields/:id', async (req, res) => {
+router.delete('/yields/:id', authenticate ,  async (req, res) => {
     try {
         const [result] = await pool.query(
             'DELETE FROM farmer_yield WHERE id = ?',
@@ -214,7 +214,7 @@ router.delete('/yields/:id', async (req, res) => {
 
 
 
-router.get('/yields/product/:productId', async (req, res) => {
+router.get('/yields/product/:productId', authenticate , async (req, res) => {
     const { productId } = req.params;
 
     try {
@@ -293,7 +293,7 @@ router.get('/yields/product/:productId', async (req, res) => {
 
 
 
-router.get('/barangay/:barangay', async (req, res) => {
+router.get('/barangay/:barangay', authenticate , async (req, res) => {
     const { barangay } = req.params;
 
     try {
@@ -383,7 +383,7 @@ router.get('/barangay/:barangay', async (req, res) => {
 
 
 
-router.get('/yields/farm/:farmId', async (req, res) => {
+router.get('/yields/farm/:farmId',authenticate ,  async (req, res) => {
     const { farmId } = req.params;
 
     try {
@@ -467,7 +467,7 @@ router.get('/yields/farm/:farmId', async (req, res) => {
 
 
 
-router.post('/yields/generate', async (req, res) => {
+router.post('/yields/generate', authenticate , async (req, res) => {
     try {
         const { farmer_id, farm_id, product_id, year, count = 20 } = req.body;
 
@@ -786,7 +786,7 @@ router.post('/yields', authenticate, async (req, res) => {
 
 
 
-router.get('/farmer-yield-distribution', async (req, res) => {
+router.get('/farmer-yield-distribution',authenticate , async (req, res) => {
   try {
     const { farmerId, year } = req.query;
 
@@ -922,7 +922,7 @@ router.get('/farmer-yield-distribution', async (req, res) => {
 
 
 
-router.get('/yields/:farmId', async (req, res) => {
+router.get('/yields/:farmId', authenticate ,  async (req, res) => {
     try {
         const { farmId } = req.params;
 
@@ -1010,7 +1010,7 @@ router.get('/yields/:farmId', async (req, res) => {
     }
 });
 
-router.get('/farmer-yields/:farmerId?', async (req, res) => {
+router.get('/farmer-yields/:farmerId?',authenticate ,  async (req, res) => {
     try {
         const { farmerId } = req.params;
 
@@ -1100,7 +1100,7 @@ router.get('/farmer-yields/:farmerId?', async (req, res) => {
     }
 });
 
-router.get('/yield-distribution', async (req, res) => {
+router.get('/yield-distribution', authenticate , async (req, res) => {
     try {
         const { sectorId, year } = req.query;
 
@@ -1244,7 +1244,7 @@ router.get('/yield-distribution', async (req, res) => {
 
 
 
-router.get('/yield-statistics', async (req, res) => {
+router.get('/yield-statistics', authenticate ,  async (req, res) => {
     try {
       const { year, farmerId } = req.query;
   

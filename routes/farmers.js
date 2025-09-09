@@ -742,16 +742,14 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
 
 
 
-
-
 // DELETE farmer
 router.delete('/farmers/:id', authenticate, async (req, res) => {
   try {
     const farmerId = req.params.id;
 
-    // Check if farmer exists
+    // Check if farmer exists and get user_id if available
     const [farmerCheck] = await pool.query(
-      'SELECT id FROM farmers WHERE id = ?',
+      'SELECT id, user_id FROM farmers WHERE id = ?',
       [farmerId]
     );
 
@@ -766,16 +764,54 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
       });
     }
 
+    const userId = farmerCheck[0].user_id;
+
     // Delete the farmer
     await pool.query(
       'DELETE FROM farmers WHERE id = ?',
       [farmerId]
     );
 
+    // If farmer has an associated user account, delete it too
+    if (userId && userId !== 0) {
+      try {
+        // Get user details including Firebase UID
+        const [users] = await pool.query(
+          'SELECT firebase_uid FROM users WHERE id = ?',
+          [userId]
+        );
+
+        if (users.length > 0) {
+          const firebaseUid = users[0].firebase_uid;
+
+          // Delete from Firebase Auth
+          try {
+            await admin.auth().deleteUser(firebaseUid);
+          } catch (firebaseError) {
+            // If Firebase user not found, proceed with DB deletion
+            if (firebaseError.code !== 'auth/user-not-found') {
+              throw firebaseError;
+            }
+            console.warn(`Firebase user ${firebaseUid} not found, but proceeding with DB deletion`);
+          }
+
+          // Delete from MySQL users table
+          await pool.query(
+            'DELETE FROM users WHERE id = ?',
+            [userId]
+          );
+        }
+      } catch (userDeletionError) {
+        console.error('Error deleting associated user account:', userDeletionError);
+        // Continue with the farmer deletion even if user deletion fails
+      }
+    }
+
     res.json({
       success: true,
       message: 'Farmer deleted successfully',
-      deletedId: farmerId
+      deletedId: farmerId,
+      deletedUserId: userId && userId !== 0 ? userId : null
     });
 
   } catch (error) {
@@ -791,9 +827,6 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
-
-
-
 
 
 
