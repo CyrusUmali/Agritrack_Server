@@ -1,15 +1,15 @@
 const mysql = require('mysql2/promise');  // Note the /promise
 
 const pool = mysql.createPool({
-   host: "localhost",  
-   user: "root",
-  password: "",
-   database: "agritrack" ,
-  // host: process.env.MYSQL_HOST ,
-  // user: process.env.MYSQL_USER  ,
-  // password: process.env.MYSQL_PASSWORD  , 
-  // database: process.env.MYSQL_DATABASE  ,
-  // port: process.env.MYSQL_PORT || 3306,
+  // host: "localhost",  
+ //  user: "root",
+//  password: "",
+//   database: "agritrack" ,
+   host: process.env.MYSQL_HOST ,
+   user: process.env.MYSQL_USER  ,
+   password: process.env.MYSQL_PASSWORD  , 
+   database: process.env.MYSQL_DATABASE  ,
+  port: process.env.MYSQL_PORT || 3306,
   waitForConnections: true, 
   connectionLimit: 5, 
   queueLimit: 0
