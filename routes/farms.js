@@ -333,11 +333,15 @@ router.get('/farms', authenticate , async (req, res) => {
   }
 });
 
+
+
+
+
 // DELETE farm by ID
-router.delete('/farms/:id', authenticate , async (req, res) => {
+router.delete('/farms/:id', authenticate,  async (req, res) => {
   const farmId = req.params.id;
 
-  if (!farmId) {
+  if (!farmId) { 
     return res.status(400).json({
       success: false,
       message: 'Missing farm ID'
@@ -358,6 +362,63 @@ router.delete('/farms/:id', authenticate , async (req, res) => {
       });
     }
 
+    const farm = existingFarm[0];
+
+    // Archive all yield records associated with this farm
+    const [yieldRecords] = await pool.query(
+      `SELECT 
+        fy.*,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        farm.farm_name
+       FROM farmer_yield fy
+       LEFT JOIN farmers f ON fy.farmer_id = f.id
+       LEFT JOIN farm_products p ON fy.product_id = p.id
+       LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+       WHERE fy.farm_id = ?`,
+      [farmId]
+    );
+
+    if (yieldRecords.length > 0) {
+      // Insert yield records into archive table
+      for (const yieldRecord of yieldRecords) {
+        await pool.query(
+          `INSERT INTO yield_archive 
+           (yield_id, farmer_id, product_id, harvest_date, farm_id, volume, 
+            notes, value, images, status, area_harvested, created_at, updated_at,
+            farmer_name, product_name, farm_name, delete_date) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            yieldRecord.id,
+            yieldRecord.farmer_id,
+            yieldRecord.product_id,
+            yieldRecord.harvest_date,
+            yieldRecord.farm_id,
+            yieldRecord.volume,
+            yieldRecord.notes,
+            yieldRecord.value,
+            yieldRecord.images,
+            yieldRecord.status,
+            yieldRecord.area_harvested,
+            yieldRecord.created_at,
+            yieldRecord.updated_at,
+            `${yieldRecord.firstname || ''} ${yieldRecord.middlename || ''} ${yieldRecord.surname || ''} ${yieldRecord.extension || ''}`.trim(),
+            yieldRecord.product_name,
+            yieldRecord.farm_name
+          ]
+        );
+      }
+
+      // Delete the yield records from the main table
+      await pool.query(
+        'DELETE FROM farmer_yield WHERE farm_id = ?',
+        [farmId]
+      );
+    }
+
     // Delete the farm
     await pool.query(
       'DELETE FROM farms WHERE farm_id = ?',
@@ -366,7 +427,8 @@ router.delete('/farms/:id', authenticate , async (req, res) => {
 
     res.json({
       success: true,
-      message: `Farm with ID ${farmId} deleted successfully`
+      message: `Farm with ID ${farmId} deleted successfully`,
+      archivedYields: yieldRecords.length
     });
   } catch (error) {
     console.error('Failed to delete farm:', error);
@@ -381,6 +443,14 @@ router.delete('/farms/:id', authenticate , async (req, res) => {
     });
   }
 });
+
+
+
+
+
+
+
+
 
 
 // POST create new farm

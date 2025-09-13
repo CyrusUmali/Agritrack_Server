@@ -6,33 +6,84 @@ const admin = require('firebase-admin');
 const pool = require('../connect');
 
  
- 
-
- 
-router.delete('/products/:id', authenticate, async (req, res) => {
+router.delete('/products/:id',authenticate , async (req, res) => {
   try {
     const productId = req.params.id;
-    const userId = req.user.dbUser.id;
-    const userSectorId = req.user.dbUser.sector_id;
 
-    // First verify the product exists and belongs to the user's sector
+    // First verify the product exists
     const [productCheck] = await pool.query(
-      `SELECT p.id 
+      `SELECT p.id, p.name 
        FROM farm_products p
-       WHERE p.id = ? 
-       ${userSectorId ? 'AND p.sector_id = ?' : ''}`,
-      userSectorId ? [productId, userSectorId] : [productId]
+       WHERE p.id = ?`,
+      [productId]
     );
 
     if (productCheck.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Product not found or not authorized',
+        message: 'Product not found',
         error: {
           code: 'PRODUCT_NOT_FOUND',
-          details: `Product with ID ${productId} not found in your sector`
+          details: `Product with ID ${productId} not found`
         }
       });
+    }
+
+    const product = productCheck[0];
+
+    // Archive all yield records associated with this product
+    const [yieldRecords] = await pool.query(
+      `SELECT 
+        fy.*,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        farm.farm_name as farm_name
+       FROM farmer_yield fy
+       LEFT JOIN farmers f ON fy.farmer_id = f.id
+       LEFT JOIN farm_products p ON fy.product_id = p.id
+       LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+       WHERE fy.product_id = ?`,
+      [productId]
+    );
+
+    if (yieldRecords.length > 0) {
+      // Insert yield records into archive table
+      for (const yieldRecord of yieldRecords) {
+        await pool.query(
+          `INSERT INTO yield_archive 
+           (yield_id, farmer_id, product_id, harvest_date, farm_id, volume, 
+            notes, value, images, status, area_harvested, created_at, updated_at,
+            farmer_name, product_name, farm_name, delete_date) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            yieldRecord.id,
+            yieldRecord.farmer_id,
+            yieldRecord.product_id,
+            yieldRecord.harvest_date,
+            yieldRecord.farm_id,
+            yieldRecord.volume,
+            yieldRecord.notes,
+            yieldRecord.value,
+            yieldRecord.images,
+            yieldRecord.status,
+            yieldRecord.area_harvested,
+            yieldRecord.created_at,
+            yieldRecord.updated_at,
+            `${yieldRecord.firstname || ''} ${yieldRecord.middlename || ''} ${yieldRecord.surname || ''} ${yieldRecord.extension || ''}`.trim(),
+            yieldRecord.product_name,
+            yieldRecord.farm_name
+          ]
+        );
+      }
+
+      // Delete the yield records from the main table
+      await pool.query(
+        'DELETE FROM farmer_yield WHERE product_id = ?',
+        [productId]
+      );
     }
 
     // Delete the product
@@ -44,7 +95,8 @@ router.delete('/products/:id', authenticate, async (req, res) => {
     res.json({
       success: true,
       message: 'Product deleted successfully',
-      deletedId: productId
+      deletedId: productId,
+      archivedYields: yieldRecords.length
     });
 
   } catch (error) {

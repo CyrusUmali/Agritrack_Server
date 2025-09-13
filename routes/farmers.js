@@ -741,15 +741,14 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
 
 
 
-
 // DELETE farmer
-router.delete('/farmers/:id', authenticate, async (req, res) => {
+router.delete('/farmers/:id', async (req, res) => {
   try {
     const farmerId = req.params.id;
 
     // Check if farmer exists and get user_id if available
     const [farmerCheck] = await pool.query(
-      'SELECT id, user_id FROM farmers WHERE id = ?',
+      'SELECT id, user_id, firstname, middlename, surname, extension FROM farmers WHERE id = ?',
       [farmerId]
     );
 
@@ -764,7 +763,70 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
       });
     }
 
-    const userId = farmerCheck[0].user_id;
+    const farmer = farmerCheck[0];
+    const userId = farmer.user_id;
+    const farmerName = `${farmer.firstname || ''} ${farmer.middlename || ''} ${farmer.surname || ''} ${farmer.extension || ''}`.trim();
+
+    // Archive all yield records associated with this farmer
+    const [yieldRecords] = await pool.query(
+      `SELECT 
+        fy.*,
+        f.firstname,
+        f.middlename,
+        f.surname,
+        f.extension,
+        p.name as product_name,
+        farm.farm_name
+       FROM farmer_yield fy
+       LEFT JOIN farmers f ON fy.farmer_id = f.id
+       LEFT JOIN farm_products p ON fy.product_id = p.id
+       LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+       WHERE fy.farmer_id = ?`,
+      [farmerId]
+    );
+
+    if (yieldRecords.length > 0) {
+      // Insert yield records into archive table
+      for (const yieldRecord of yieldRecords) {
+        await pool.query(
+          `INSERT INTO yield_archive 
+           (yield_id, farmer_id, product_id, harvest_date, farm_id, volume, 
+            notes, value, images, status, area_harvested, created_at, updated_at,
+            farmer_name, product_name, farm_name, delete_date) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            yieldRecord.id,
+            yieldRecord.farmer_id,
+            yieldRecord.product_id,
+            yieldRecord.harvest_date,
+            yieldRecord.farm_id,
+            yieldRecord.volume,
+            yieldRecord.notes,
+            yieldRecord.value,
+            yieldRecord.images,
+            yieldRecord.status,
+            yieldRecord.area_harvested,
+            yieldRecord.created_at,
+            yieldRecord.updated_at,
+            `${yieldRecord.firstname || ''} ${yieldRecord.middlename || ''} ${yieldRecord.surname || ''} ${yieldRecord.extension || ''}`.trim(),
+            yieldRecord.product_name,
+            yieldRecord.farm_name
+          ]
+        );
+      }
+
+      // Delete the yield records from the main table
+      await pool.query(
+        'DELETE FROM farmer_yield WHERE farmer_id = ?',
+        [farmerId]
+      );
+    }
+
+    // Delete farms associated with this farmer (no archiving)
+    await pool.query(
+      'DELETE FROM farms WHERE farmer_id = ?',
+      [farmerId]
+    );
 
     // Delete the farmer
     await pool.query(
@@ -811,7 +873,8 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
       success: true,
       message: 'Farmer deleted successfully',
       deletedId: farmerId,
-      deletedUserId: userId && userId !== 0 ? userId : null
+      deletedUserId: userId && userId !== 0 ? userId : null,
+      archivedYields: yieldRecords.length
     });
 
   } catch (error) {
@@ -827,6 +890,8 @@ router.delete('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
+
+
 
 
 

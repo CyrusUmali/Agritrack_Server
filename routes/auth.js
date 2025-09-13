@@ -1957,7 +1957,9 @@ router.delete('/users/:id', authenticate, async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
-});   
+});  
+
+
 
 router.get('/user-statistics',authenticate, async (req, res) => {
   try {
