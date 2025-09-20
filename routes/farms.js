@@ -161,11 +161,13 @@ SELECT
   f.sector_id, 
   f.parentBarangay,
   f.status,   
+  f.lake,
   s.sector_name,
   fr.name as farmer_name
 FROM farms f
 JOIN sectors s ON f.sector_id = s.sector_id
 JOIN farmers fr ON f.farmer_id = fr.id 
+where f.status = 'Active'
 `;
 
 // Add additional WHERE clause if farmerId is provided
@@ -214,6 +216,7 @@ farmQuery += ` ORDER BY f.farm_name ASC`;
         sectorName: farm.sector_name,
         pinStyle: farm.sector_name,
         farmStatus: farm.status, 
+        lake: farm.lake || 'N/A',
         parentBarangay: farm.parentBarangay
       };
     });
@@ -472,10 +475,6 @@ router.post('/farms/', authenticate, async (req, res) => {
       });
     }
 
-    // Check user role and set status accordingly (case-insensitive)
-    const userRole = req.user.dbUser.role; // Assuming role is stored in the user object
-    const farmStatus = userRole && userRole.toLowerCase() === 'farmer' ? 'Inactive' : 'Active';
-
     // Convert vertices to the correct format if needed
     const formattedVertices = Array.isArray(vertices[0])
       ? vertices.map(([lat, lng]) => ({ lat, lng }))
@@ -494,7 +493,7 @@ router.post('/farms/', authenticate, async (req, res) => {
         status,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Active', NOW(), NOW())
     `;
     
     const [result] = await pool.query(insertQuery, [
@@ -505,8 +504,8 @@ router.post('/farms/', authenticate, async (req, res) => {
       farmerId || null,
       JSON.stringify(products || ["Rice"]),
       area,
-      description || null,
-      farmStatus // Use the determined status
+      description || null
+      // status is not in the parameters as it's hardcoded as 'Active'
     ]);
 
     // Get the newly created farm
@@ -540,8 +539,7 @@ router.post('/farms/', authenticate, async (req, res) => {
         sectorId: createdFarm.sector_id,
         sectorName: createdFarm.sector_name,
         pinStyle: pinStyle || createdFarm.sector_name.toLowerCase(),
-        parentBarangay: createdFarm.parentBarangay,
-        status: createdFarm.status // Include status in response
+        parentBarangay: createdFarm.parentBarangay
       }
     });
 
@@ -560,9 +558,8 @@ router.post('/farms/', authenticate, async (req, res) => {
 });
 
 
-
 // PUT update farm
-router.put('/farms/:id', authenticate ,  async (req, res) => {
+router.put('/farms/:id', authenticate, async (req, res) => {
   try {
     const farmId = req.params.id;
     const {
@@ -574,6 +571,7 @@ router.put('/farms/:id', authenticate ,  async (req, res) => {
       products,
       description,
       pinStyle,
+      lake,   // Added lake parameter
       area
     } = req.body;
 
@@ -581,7 +579,7 @@ router.put('/farms/:id', authenticate ,  async (req, res) => {
     if (!name || !vertices || !sectorId) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, vertices,   or sectorId'
+        message: 'Missing required fields: name, vertices, or sectorId'
       });
     }
 
@@ -613,6 +611,7 @@ router.put('/farms/:id', authenticate ,  async (req, res) => {
         products = ?,
         area = ?,
         description = ?,
+        lake = ?,  -- Added lake field
         updated_at = NOW()
       WHERE farm_id = ?
     `;
@@ -626,6 +625,7 @@ router.put('/farms/:id', authenticate ,  async (req, res) => {
       JSON.stringify(productIds), // Store only the IDs
       area,
       description || null,
+      lake || null,  // Added lake value
       farmId
     ]);
 
@@ -666,6 +666,7 @@ router.put('/farms/:id', authenticate ,  async (req, res) => {
         color: getSectorColor(updatedFarm.sector_id),
         area: updatedFarm.area ? parseFloat(updatedFarm.area) : 0,
         description: updatedFarm.description,
+        lake: updatedFarm.lake,  // Added lake to response
         sectorId: updatedFarm.sector_id,
         sectorName: updatedFarm.sector_name,
         pinStyle: pinStyle || updatedFarm.sector_name.toLowerCase(),
@@ -686,6 +687,7 @@ router.put('/farms/:id', authenticate ,  async (req, res) => {
     });
   }
 });
+
 
 router.put('/farmsProfile/:id', authenticate , async (req, res) => {
   try {
