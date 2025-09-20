@@ -131,7 +131,7 @@ const getSectorColor = (sectorId) => {
     case 3: // highvaluecrop
       return 0xFF9C27B0;  
     case 4: // livestock
-       return 0x80512E19; 
+    return 0x80987665;
     case 5: // fishery
       return 0xFF2196F3; 
     case 6: // organic
@@ -450,11 +450,7 @@ router.delete('/farms/:id', authenticate,  async (req, res) => {
 
 
 
-
-
-
-// POST create new farm
-router.post('/farms/', authenticate , async (req, res) => {
+router.post('/farms/', authenticate, async (req, res) => {
   try {
     const {
       name,
@@ -476,12 +472,16 @@ router.post('/farms/', authenticate , async (req, res) => {
       });
     }
 
+    // Check user role and set status accordingly (case-insensitive)
+    const userRole = req.user.dbUser.role; // Assuming role is stored in the user object
+    const farmStatus = userRole && userRole.toLowerCase() === 'farmer' ? 'Inactive' : 'Active';
+
     // Convert vertices to the correct format if needed
     const formattedVertices = Array.isArray(vertices[0])
       ? vertices.map(([lat, lng]) => ({ lat, lng }))
       : vertices;
 
-      const insertQuery = `
+    const insertQuery = `
       INSERT INTO farms (
         farm_name,
         vertices,
@@ -494,7 +494,7 @@ router.post('/farms/', authenticate , async (req, res) => {
         status,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Active', NOW(), NOW())
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     `;
     
     const [result] = await pool.query(insertQuery, [
@@ -505,8 +505,8 @@ router.post('/farms/', authenticate , async (req, res) => {
       farmerId || null,
       JSON.stringify(products || ["Rice"]),
       area,
-      description || null
-      // status is not in the parameters as it's hardcoded as 'Active'
+      description || null,
+      farmStatus // Use the determined status
     ]);
 
     // Get the newly created farm
@@ -540,7 +540,8 @@ router.post('/farms/', authenticate , async (req, res) => {
         sectorId: createdFarm.sector_id,
         sectorName: createdFarm.sector_name,
         pinStyle: pinStyle || createdFarm.sector_name.toLowerCase(),
-        parentBarangay: createdFarm.parentBarangay
+        parentBarangay: createdFarm.parentBarangay,
+        status: createdFarm.status // Include status in response
       }
     });
 
@@ -557,6 +558,8 @@ router.post('/farms/', authenticate , async (req, res) => {
     });
   }
 });
+
+
 
 // PUT update farm
 router.put('/farms/:id', authenticate ,  async (req, res) => {
