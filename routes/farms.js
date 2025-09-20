@@ -131,7 +131,7 @@ const getSectorColor = (sectorId) => {
     case 3: // highvaluecrop
       return 0xFF9C27B0;  
     case 4: // livestock
-       return 0x80512E19;
+       return 0x80987665; 
     case 5: // fishery
       return 0xFF2196F3; 
     case 6: // organic
