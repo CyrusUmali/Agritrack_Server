@@ -131,7 +131,7 @@ const getSectorColor = (sectorId) => {
     case 3: // highvaluecrop
       return 0xFF9C27B0;  
     case 4: // livestock
-       return 0x80987665; 
+       return 0x80512E19;
     case 5: // fishery
       return 0xFF2196F3; 
     case 6: // organic
@@ -143,7 +143,7 @@ const getSectorColor = (sectorId) => {
 
 
 
-router.get('/farms-view',authenticate ,  async (req, res) => {
+router.get('/farms-view' ,  async (req, res) => {
   try {
     // Get farmerId from query parameters if it exists
     const { farmerId } = req.query;
@@ -165,8 +165,7 @@ SELECT
   fr.name as farmer_name
 FROM farms f
 JOIN sectors s ON f.sector_id = s.sector_id
-JOIN farmers fr ON f.farmer_id = fr.id
-WHERE f.status = 'Active'  
+JOIN farmers fr ON f.farmer_id = fr.id 
 `;
 
 // Add additional WHERE clause if farmerId is provided
@@ -214,6 +213,7 @@ farmQuery += ` ORDER BY f.farm_name ASC`;
         sectorId: farm.sector_id,
         sectorName: farm.sector_name,
         pinStyle: farm.sector_name,
+        farmStatus: farm.status, 
         parentBarangay: farm.parentBarangay
       };
     });
