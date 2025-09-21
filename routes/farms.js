@@ -626,8 +626,9 @@ router.put('/farms/:id', authenticate, async (req, res) => {
       JSON.stringify(productIds), // Store only the IDs
       area,
       description || null,
+      lake || null,   
       status || null , 
-      lake || null,  // Added lake value
+     
       farmId
     ]);
 
