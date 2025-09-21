@@ -557,8 +557,7 @@ router.post('/farms/', authenticate, async (req, res) => {
   }
 });
 
-
-// PUT update farm
+ 
 router.put('/farms/:id', authenticate, async (req, res) => {
   try {
     const farmId = req.params.id;
@@ -572,7 +571,8 @@ router.put('/farms/:id', authenticate, async (req, res) => {
       description,
       pinStyle,
       lake,   // Added lake parameter
-      area
+      area,
+      status
     } = req.body;
 
     // Validate required fields
@@ -611,7 +611,8 @@ router.put('/farms/:id', authenticate, async (req, res) => {
         products = ?,
         area = ?,
         description = ?,
-        lake = ?,  -- Added lake field
+        lake = ?,   
+        status = ? ,
         updated_at = NOW()
       WHERE farm_id = ?
     `;
@@ -625,6 +626,7 @@ router.put('/farms/:id', authenticate, async (req, res) => {
       JSON.stringify(productIds), // Store only the IDs
       area,
       description || null,
+      status || null , 
       lake || null,  // Added lake value
       farmId
     ]);
@@ -667,6 +669,7 @@ router.put('/farms/:id', authenticate, async (req, res) => {
         area: updatedFarm.area ? parseFloat(updatedFarm.area) : 0,
         description: updatedFarm.description,
         lake: updatedFarm.lake,  // Added lake to response
+        status:updatedFarm.status, 
         sectorId: updatedFarm.sector_id,
         sectorName: updatedFarm.sector_name,
         pinStyle: pinStyle || updatedFarm.sector_name.toLowerCase(),
