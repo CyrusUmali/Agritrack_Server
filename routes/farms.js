@@ -601,7 +601,7 @@ router.put('/farms/:id', authenticate, async (req, res) => {
       })
       : [];
 
-    const updateQuery = `
+      const updateQuery = `
       UPDATE farms SET
         farm_name = ?,
         vertices = ?,
@@ -612,7 +612,7 @@ router.put('/farms/:id', authenticate, async (req, res) => {
         area = ?,
         description = ?,
         lake = ?,   
-        status = ? ,
+        status = ?,
         updated_at = NOW()
       WHERE farm_id = ?
     `;
@@ -621,15 +621,14 @@ router.put('/farms/:id', authenticate, async (req, res) => {
       name,
       JSON.stringify(formattedVertices),
       barangay,
-      sectorId,
+      sectorId,   
       farmerId || null,
-      JSON.stringify(productIds), // Store only the IDs
-      area,
+      JSON.stringify(productIds),  
+      area,   
       description || null,
-      lake || null,   
-      status || null , 
-     
-      farmId
+      lake || null,   // This should be the 9th parameter
+      status || null, // This should be the 10th parameter
+      farmId          // This should be the 11th parameter
     ]);
 
     // Get the updated farm with product names

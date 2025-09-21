@@ -384,7 +384,7 @@ router.get('/barangay/:barangay', authenticate , async (req, res) => {
 
 
 
-router.get('/lake/:lake', authenticate, async (req, res) => {
+router.get('/lake/:lake', async (req, res) => {
     const { lake } = req.params;
 
     try {
