@@ -166,8 +166,7 @@ SELECT
   fr.name as farmer_name
 FROM farms f
 JOIN sectors s ON f.sector_id = s.sector_id
-JOIN farmers fr ON f.farmer_id = fr.id 
-where f.status = 'Active'
+JOIN farmers fr ON f.farmer_id = fr.id  
 `;
 
 // Add additional WHERE clause if farmerId is provided
@@ -215,8 +214,8 @@ farmQuery += ` ORDER BY f.farm_name ASC`;
         sectorId: farm.sector_id,
         sectorName: farm.sector_name,
         pinStyle: farm.sector_name,
-        farmStatus: farm.status, 
-        lake: farm.lake || 'N/A',
+        status: farm.status, 
+        lake: farm.lake || '-',
         parentBarangay: farm.parentBarangay
       };
     });
