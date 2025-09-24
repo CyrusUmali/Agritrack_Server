@@ -450,8 +450,6 @@ router.delete('/farms/:id', authenticate,  async (req, res) => {
 
 
 
-
-
 router.post('/farms/', authenticate, async (req, res) => {
   try {
     const {
@@ -474,6 +472,14 @@ router.post('/farms/', authenticate, async (req, res) => {
       });
     }
 
+    // Get user role from the authenticated request
+    const userRole = req.user?.dbUser?.role; // Assuming role is stored in dbUser
+    
+    // Determine status based on user role
+    const status = (userRole === 'farmer' || userRole === 'Farmer') 
+      ? 'Inactive' 
+      : 'Active';
+
     // Convert vertices to the correct format if needed
     const formattedVertices = Array.isArray(vertices[0])
       ? vertices.map(([lat, lng]) => ({ lat, lng }))
@@ -492,7 +498,7 @@ router.post('/farms/', authenticate, async (req, res) => {
         status,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Active', NOW(), NOW())
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     `;
     
     const [result] = await pool.query(insertQuery, [
@@ -503,8 +509,8 @@ router.post('/farms/', authenticate, async (req, res) => {
       farmerId || null,
       JSON.stringify(products || ["Rice"]),
       area,
-      description || null
-      // status is not in the parameters as it's hardcoded as 'Active'
+      description || null,
+      status // Use the dynamically determined status
     ]);
 
     // Get the newly created farm
@@ -538,7 +544,8 @@ router.post('/farms/', authenticate, async (req, res) => {
         sectorId: createdFarm.sector_id,
         sectorName: createdFarm.sector_name,
         pinStyle: pinStyle || createdFarm.sector_name.toLowerCase(),
-        parentBarangay: createdFarm.parentBarangay
+        parentBarangay: createdFarm.parentBarangay,
+        status: createdFarm.status // Include status in response
       }
     });
 
@@ -555,6 +562,13 @@ router.post('/farms/', authenticate, async (req, res) => {
     });
   }
 });
+
+
+
+
+
+
+
 
  
 router.put('/farms/:id', authenticate, async (req, res) => {
