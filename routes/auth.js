@@ -778,7 +778,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
 
 
-router.post('/register-farmer', authenticate, async (req, res) => {
+router.post('/register-farmer', async (req, res) => {
   let firebaseUser;
   let mysqlUserInsertResult;
   let farmerInsertResult;
