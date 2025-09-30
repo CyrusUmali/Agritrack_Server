@@ -143,17 +143,17 @@ const getSectorColor = (sectorId) => {
 
 
 
-router.get('/farms-view' ,  async (req, res) => {
+router.get('/farms-view', async (req, res) => {
   try {
     // Get farmerId from query parameters if it exists
     const { farmerId } = req.query;
 
     // Base query
-let farmQuery = `
+    let farmQuery = `
 SELECT 
   f.farm_id,
   f.vertices,
-  f.farm_name,
+  f.farm_name, 
   f.farmer_id,
   f.products,
   f.area,
@@ -169,20 +169,29 @@ JOIN sectors s ON f.sector_id = s.sector_id
 JOIN farmers fr ON f.farmer_id = fr.id  
 `;
 
-// Add additional WHERE clause if farmerId is provided
-if (farmerId) {
-farmQuery += ` AND f.farmer_id = ${pool.escape(farmerId)}`;
-}
+    // Add additional WHERE clause if farmerId is provided
+    if (farmerId) {
+      farmQuery += ` AND f.farmer_id = ${pool.escape(farmerId)}`;
+    }
 
-// Add ordering
-farmQuery += ` ORDER BY f.farm_name ASC`;
+    // Add ordering
+    farmQuery += ` ORDER BY f.farm_name ASC`;
 
     const [farms] = await pool.query(farmQuery);
 
-    // Get all products to create a mapping
-    const [products] = await pool.query('SELECT id, name FROM farm_products');
+    // Get unique products from yields table instead of farm_products
+    const [yieldProducts] = await pool.query(`
+      SELECT DISTINCT 
+        fy.product_id as id,
+        p.name as name
+      FROM farmer_yield fy
+      LEFT JOIN farm_products p ON fy.product_id = p.id
+      WHERE fy.product_id IS NOT NULL
+      ORDER BY p.name ASC
+    `);
+
     const productMap = {};
-    products.forEach(product => {
+    yieldProducts.forEach(product => {
       productMap[product.id] = product.name;
     });
 
@@ -238,6 +247,12 @@ farmQuery += ` ORDER BY f.farm_name ASC`;
     });
   }
 });
+
+
+
+
+
+
 
 
 
