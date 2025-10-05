@@ -7,284 +7,285 @@ const pool = require('../connect');
 
 
 
-
-
-
+   // Helper function to safely format area_harvested
+   const formatAreaHarvested = (area) => {
+    if (area === null || area === undefined) return 0;
+    return parseFloat(Number(area).toFixed(2));
+};
 
 router.get('/sector-yields-report', async (req, res) => {
-    try {
-        // Extract and clean the IDs
-        const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
-        const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
+  try {
+      // Extract and clean the IDs
+      const sectorId = req.query.sectorId ? req.query.sectorId.split(':')[0].trim() : null;
+      const productId = req.query.productId ? req.query.productId.split(':')[0].trim() : null;
 
-        // Other params
-        const { startDate, endDate, viewBy } = req.query;
+      // Other params
+      const { startDate, endDate, viewBy } = req.query;
 
-        const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
-        
-        // Parse count parameter
-        const count = countParam === 'all' ? null : parseInt(countParam);
-        const limitCount = Number.isInteger(count) && count > 0 ? count : null;
+      const countParam = req.query.count ? req.query.count.trim().toLowerCase() : 'all';
+      
+      // Parse count parameter
+      const count = countParam === 'all' ? null : parseInt(countParam);
+      const limitCount = Number.isInteger(count) && count > 0 ? count : null;
 
-        // Validate date range
-        const dateRangeValid = startDate && endDate && startDate !== endDate;
+      // Validate date range
+      const dateRangeValid = startDate && endDate && startDate !== endDate;
 
-        let query;
-        let groupBy = '';
-        let selectFields = `
-            p.sector_id,
-            s.sector_name,
-            fy.product_id,
-            p.name as product_name,
-            NULL as harvest_date,
-            NULL as volume,
-            NULL as Value,
-            NULL as area_harvested,
-            NULL as harvest_year,
-            NULL as harvest_month
-        `;
+      let query;
+      let groupBy = '';
+      let selectFields = `
+          p.sector_id,
+          s.sector_name,
+          fy.product_id,
+          p.name as product_name,
+          NULL as harvest_date,
+          NULL as volume,
+          NULL as Value,
+          NULL as area_harvested,
+          NULL as harvest_year,
+          NULL as harvest_month
+      `;
 
-        if (viewBy === 'Monthly') {
-            selectFields = `
-                p.sector_id,
-                s.sector_name,
-                fy.product_id,
-                p.name as product_name,
-                NULL as harvest_date,
-                COALESCE(SUM(fy.volume), 0) as volume,
-                COALESCE(SUM(fy.Value), 0) as Value,
-                COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
-                YEAR(fy.harvest_date) as harvest_year,
-                MONTH(fy.harvest_date) as harvest_month,
-                DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
-                DATE_FORMAT(fy.harvest_date, '%M') as month_name
-            `;
-            groupBy = 'GROUP BY p.sector_id, YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id, p.name';
-        } else if (viewBy === 'Yearly') {
-            selectFields = `
-                p.sector_id,
-                s.sector_name,
-                fy.product_id,
-                p.name as product_name,
-                NULL as harvest_date,
-                COALESCE(SUM(fy.volume), 0) as volume,
-                COALESCE(SUM(fy.Value), 0) as Value,
-                COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
-                YEAR(fy.harvest_date) as harvest_year,
-                MONTH(fy.harvest_date) as harvest_month,
-                DATE_FORMAT(fy.harvest_date, '%Y') as year,
-                DATE_FORMAT(fy.harvest_date, '%M') as month_name,
-                DATE_FORMAT(fy.harvest_date, '%Y') as year_display
-            `;
-            groupBy = 'GROUP BY p.sector_id, YEAR(fy.harvest_date), fy.product_id, p.name';
-        } else {
-            // Individual entries
-            selectFields = `
-                p.sector_id,
-                s.sector_name,
-                fy.product_id,
-                p.name as product_name,
-                fy.harvest_date,
-                fy.volume,
-                fy.Value,
-                fy.area_harvested,
-                YEAR(fy.harvest_date) as harvest_year,
-                MONTH(fy.harvest_date) as harvest_month
-            `;
-        }
+      if (viewBy === 'Monthly') {
+          selectFields = `
+              p.sector_id,
+              s.sector_name,
+              fy.product_id,
+              p.name as product_name,
+              NULL as harvest_date,
+              COALESCE(SUM(fy.volume), 0) as volume,
+              COALESCE(SUM(fy.Value), 0) as Value,
+              COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
+              YEAR(fy.harvest_date) as harvest_year,
+              MONTH(fy.harvest_date) as harvest_month,
+              DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
+              DATE_FORMAT(fy.harvest_date, '%M') as month_name
+          `;
+          groupBy = 'GROUP BY p.sector_id, YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.product_id, p.name';
+      } else if (viewBy === 'Yearly') {
+          selectFields = `
+              p.sector_id,
+              s.sector_name,
+              fy.product_id,
+              p.name as product_name,
+              NULL as harvest_date,
+              COALESCE(SUM(fy.volume), 0) as volume,
+              COALESCE(SUM(fy.Value), 0) as Value,
+              COALESCE(SUM(fy.area_harvested), 0) as area_harvested,
+              YEAR(fy.harvest_date) as harvest_year,
+              MONTH(fy.harvest_date) as harvest_month,
+              DATE_FORMAT(fy.harvest_date, '%Y') as year,
+              DATE_FORMAT(fy.harvest_date, '%M') as month_name,
+              DATE_FORMAT(fy.harvest_date, '%Y') as year_display
+          `;
+          groupBy = 'GROUP BY p.sector_id, YEAR(fy.harvest_date), fy.product_id, p.name';
+      } else {
+          // Individual entries
+          selectFields = `
+              p.sector_id,
+              s.sector_name,
+              fy.product_id,
+              p.name as product_name,
+              fy.harvest_date,
+              fy.volume,
+              fy.Value,
+              fy.area_harvested,
+              YEAR(fy.harvest_date) as harvest_year,
+              MONTH(fy.harvest_date) as harvest_month
+          `;
+      }
 
-        // Get sectors based on filter
-        let sectorQuery = 'SELECT sector_id, sector_name FROM sectors';
-        let sectorParams = [];
-        
-        if (sectorId) {
-            sectorQuery += ' WHERE sector_id = ?';
-            sectorParams.push(sectorId);
-        }
-        
-        sectorQuery += ' ORDER BY sector_name';
-        const [sectors] = await pool.query(sectorQuery, sectorParams);
+      // Get sectors based on filter
+      let sectorQuery = 'SELECT sector_id, sector_name FROM sectors';
+      let sectorParams = [];
+      
+      if (sectorId) {
+          sectorQuery += ' WHERE sector_id = ?';
+          sectorParams.push(sectorId);
+      }
+      
+      sectorQuery += ' ORDER BY sector_name';
+      const [sectors] = await pool.query(sectorQuery, sectorParams);
 
-        // Main query
-        query = `
-            SELECT 
-                ${selectFields}
-            FROM farm_products p
-            LEFT JOIN sectors s ON p.sector_id = s.sector_id
-            LEFT JOIN farmer_yield fy ON p.id = fy.product_id AND (fy.status IS NULL OR fy.status = "Accepted")
-            LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
-            LEFT JOIN farmers f ON farm.farmer_id = f.id
-            WHERE 1=1
-        `;
+      // Main query
+      query = `
+          SELECT 
+              ${selectFields}
+          FROM farm_products p
+          LEFT JOIN sectors s ON p.sector_id = s.sector_id
+          LEFT JOIN farmer_yield fy ON p.id = fy.product_id AND (fy.status IS NULL OR fy.status = "Accepted")
+          LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+          LEFT JOIN farmers f ON farm.farmer_id = f.id
+          WHERE 1=1
+      `;
 
-        const conditions = [];
-        const params = [];
+      const conditions = [];
+      const params = [];
 
-        if (sectorId) {
-            conditions.push('p.sector_id = ?');
-            params.push(sectorId);
-        }
+      if (sectorId) {
+          conditions.push('p.sector_id = ?');
+          params.push(sectorId);
+      }
 
-        if (productId) {
-            conditions.push('fy.product_id = ?');
-            params.push(productId);
-        }
+      if (productId) {
+          conditions.push('fy.product_id = ?');
+          params.push(productId);
+      }
 
-        // Add date range filter if valid
-        if (dateRangeValid) {
-            conditions.push('fy.harvest_date BETWEEN ? AND ?');
-            params.push(startDate, endDate);
-        }
+      // Add date range filter if valid
+      if (dateRangeValid) {
+          conditions.push('fy.harvest_date BETWEEN ? AND ?');
+          params.push(startDate, endDate);
+      }
 
-        if (conditions.length > 0) {
-            query += ' AND ' + conditions.join(' AND ');
-        }
+      if (conditions.length > 0) {
+          query += ' AND ' + conditions.join(' AND ');
+      }
 
-        query += ` ${groupBy} ORDER BY `;
+      query += ` ${groupBy} ORDER BY `;
 
-        // Adjust ordering based on viewBy
-        if (viewBy === 'Monthly') {
-            query += 'month_year DESC, sector_name, product_name';
-        } else if (viewBy === 'Yearly') {
-            query += 'year DESC, sector_name, product_name';
-        } else {
-            query += 'sector_name, fy.harvest_date DESC, product_name';
-        }
+      // Adjust ordering based on viewBy
+      if (viewBy === 'Monthly') {
+          query += 'month_year DESC, sector_name, product_name';
+      } else if (viewBy === 'Yearly') {
+          query += 'year DESC, sector_name, product_name';
+      } else {
+          query += 'sector_name, fy.harvest_date DESC, product_name';
+      }
 
-        // Add LIMIT clause if count is specified
-        if (limitCount !== null) {
-            query += ' LIMIT ?';
-            params.push(limitCount);
-        }
+      // Add LIMIT clause if count is specified
+      if (limitCount !== null) {
+          query += ' LIMIT ?';
+          params.push(limitCount);
+      }
 
-        const [yields] = await pool.query(query, params);
+      const [yields] = await pool.query(query, params);
 
-        // Format response
-        let formattedYields;
-        if (viewBy === 'Monthly') {
-            formattedYields = yields.map(yield => ({
-                sector_name: yield.sector_name,
-                period: yield.month_year,
-                harvest_date: `${yield.month_name} ${yield.harvest_year}`,
-                product: yield.product_id ? {
-                    id: yield.product_id,
-                    name: yield.product_name, 
-                } : null,
-                volume: parseFloat(yield.volume || 0),
-                total_value: parseFloat(yield.Value || 0),
-                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
-                year: yield.harvest_year,
-                month: yield.harvest_month,
-                month_name: yield.month_name,
-            }));
-        } else if (viewBy === 'Yearly') {
-            formattedYields = yields.map(yield => ({
-                sector_name: yield.sector_name,
-                period: yield.year,
-                harvest_date: yield.year_display,
-                product: yield.product_id ? {
-                    id: yield.product_id,
-                    name: yield.product_name,
-                } : null,
-                volume: parseFloat(yield.volume || 0),
-                total_value: parseFloat(yield.Value || 0),
-                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
-                year: yield.harvest_year,
-                month: yield.harvest_month,
-                month_name: yield.month_name,
-                year_display: yield.year_display
-            }));
-        } else {
-            // Individual entries
-            formattedYields = yields.map(yield => ({
-                sector_name: yield.sector_name,
-                product: yield.product_name,
-                harvest_date: yield.harvest_date ? 
-                    new Date(yield.harvest_date).toISOString().split('T')[0] : null,
-                volume: parseFloat(yield.volume || 0),
-                value: parseFloat(yield.Value || 0),
-                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0)
-            }));
-        }
+   
 
-        // Group by period and include all products when no specific product is selected
-        if ((viewBy === 'Monthly' || viewBy === 'Yearly') && !productId) {
-            const groupedData = {};
-            
-            formattedYields.forEach(yield => {
-                const key = `${yield.sector_id}_${yield.period}`;
-                if (!groupedData[key]) {
-                    groupedData[key] = {
-                        sector_name: yield.sector_name,
-                        period: yield.period,
-                        period_display: viewBy === 'Monthly' ? `${yield.month_name} ${yield.year}` : yield.year_display,
-                        year: yield.year,
-                        month: yield.month,
-                        month_name: yield.month_name,
-                        total_volume: 0,
-                        total_value: 0,
-                        total_area_harvested: 0,
-                        products: []
-                    };
-                }
-                
-                if (yield.product && yield.product.name) {
-                    if (!groupedData[key].products.includes(yield.product.name)) {
-                        groupedData[key].products.push(yield.product.name);
-                    }
-                }
-                
-                groupedData[key].total_volume += yield.volume;
-                groupedData[key].total_value += yield.total_value;
-                groupedData[key].total_area_harvested += yield.area_harvested;
-            });
+      // Format response
+      let formattedYields;
+      if (viewBy === 'Monthly') {
+          formattedYields = yields.map(yield => ({
+              sector_name: yield.sector_name,
+              period: yield.month_year,
+              harvest_date: `${yield.month_name} ${yield.harvest_year}`,
+              product: yield.product_id ? {
+                  id: yield.product_id,
+                  name: yield.product_name, 
+              } : null,
+              volume: parseFloat(yield.volume || 0),
+              total_value: parseFloat(yield.Value || 0),
+              area_harvested: formatAreaHarvested(yield.area_harvested),
+              year: yield.harvest_year,
+              month: yield.harvest_month,
+              month_name: yield.month_name,
+          }));
+      } else if (viewBy === 'Yearly') {
+          formattedYields = yields.map(yield => ({
+              sector_name: yield.sector_name,
+              period: yield.year,
+              harvest_date: yield.year_display,
+              product: yield.product_id ? {
+                  id: yield.product_id,
+                  name: yield.product_name,
+              } : null,
+              volume: parseFloat(yield.volume || 0),
+              total_value: parseFloat(yield.Value || 0),
+              area_harvested: formatAreaHarvested(yield.area_harvested),
+              year: yield.harvest_year,
+              month: yield.harvest_month,
+              month_name: yield.month_name,
+              year_display: yield.year_display
+          }));
+      } else {
+          // Individual entries
+          formattedYields = yields.map(yield => ({
+              sector_name: yield.sector_name,
+              product: yield.product_name,
+              harvest_date: yield.harvest_date ? 
+                  new Date(yield.harvest_date).toISOString().split('T')[0] : null,
+              volume: parseFloat(yield.volume || 0),
+              value: parseFloat(yield.Value || 0),
+              area_harvested: formatAreaHarvested(yield.area_harvested)
+          }));
+      }
 
-            // Convert to array format
-            formattedYields = Object.values(groupedData).map(item => ({
-                sector_name: item.sector_name,
-                period: item.period,
-                period_display: item.period_display,
-                year: item.year,
-                month: item.month,
-                month_name: item.month_name,
-                volume: item.total_volume,
-                total_value: item.total_value,
-                area_harvested: item.total_area_harvested,
-                harvest_date: item.period_display,
-                product: item.products.join(', ')
-            }));
-        }
+      // Group by period and include all products when no specific product is selected
+      if ((viewBy === 'Monthly' || viewBy === 'Yearly') && !productId) {
+          const groupedData = {};
+          
+          formattedYields.forEach(yield => {
+              const key = `${yield.sector_id}_${yield.period}`;
+              if (!groupedData[key]) {
+                  groupedData[key] = {
+                      sector_name: yield.sector_name,
+                      period: yield.period,
+                      period_display: viewBy === 'Monthly' ? `${yield.month_name} ${yield.year}` : yield.year_display,
+                      year: yield.year,
+                      month: yield.month,
+                      month_name: yield.month_name,
+                      total_volume: 0,
+                      total_value: 0,
+                      total_area_harvested: 0,
+                      products: []
+                  };
+              }
+              
+              if (yield.product && yield.product.name) {
+                  if (!groupedData[key].products.includes(yield.product.name)) {
+                      groupedData[key].products.push(yield.product.name);
+                  }
+              }
+              
+              groupedData[key].total_volume += yield.volume;
+              groupedData[key].total_value += yield.total_value;
+              groupedData[key].total_area_harvested += yield.area_harvested;
+          });
 
-        res.json({
-            success: true,
-            filters: {
-                sectorId: sectorId || 'all',
-                productId: productId || 'all',
-                startDate: dateRangeValid ? startDate : 'all',
-                endDate: dateRangeValid ? endDate : 'all',
-                viewBy: viewBy || 'individual',
-                count: limitCount !== null ? limitCount : 'all'
-            },
-            count: formattedYields.length,
-            yields: formattedYields
-        });
+          // Convert to array format
+          formattedYields = Object.values(groupedData).map(item => ({
+              sector_name: item.sector_name,
+              period: item.period,
+              period_display: item.period_display,
+              year: item.year,
+              month: item.month,
+              month_name: item.month_name,
+              volume: item.total_volume,
+              total_value: item.total_value,
+              area_harvested: formatAreaHarvested(item.total_area_harvested),
+              harvest_date: item.period_display,
+              product: item.products.join(', ')
+          }));
+      }
 
-    } catch (error) {
-        console.error('Failed to fetch sector yields:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to fetch sector yields',
-            error: {
-                code: 'SECTOR_YIELD_FILTER_ERROR',
-                details: error.message,
-                sqlMessage: error.sqlMessage || 'No SQL error message'
-            }
-        });
-    }
+      res.json({
+          success: true,
+          filters: {
+              sectorId: sectorId || 'all',
+              productId: productId || 'all',
+              startDate: dateRangeValid ? startDate : 'all',
+              endDate: dateRangeValid ? endDate : 'all',
+              viewBy: viewBy || 'individual',
+              count: limitCount !== null ? limitCount : 'all'
+          },
+          count: formattedYields.length,
+          yields: formattedYields
+      });
+
+  } catch (error) {
+      console.error('Failed to fetch sector yields:', error);
+      res.status(500).json({
+          success: false,
+          message: 'Failed to fetch sector yields',
+          error: {
+              code: 'SECTOR_YIELD_FILTER_ERROR',
+              details: error.message,
+              sqlMessage: error.sqlMessage || 'No SQL error message'
+          }
+      });
+  }
 });
-
-
-
 
 
 
@@ -452,7 +453,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
-                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
+                area_harvested: formatAreaHarvested(yield.area_harvested),
                 year: yield.harvest_year,
                 month: yield.harvest_month,
                 month_name: yield.month_name,
@@ -468,7 +469,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                 } : null,
                 volume: parseFloat(yield.volume || 0),
                 total_value: parseFloat(yield.Value || 0),
-                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0),
+                area_harvested: formatAreaHarvested(yield.area_harvested),
                 year: yield.harvest_year,
                 month: yield.harvest_month,
                 month_name: yield.month_name,
@@ -483,7 +484,7 @@ router.get('/barangay-yields-report', async (req, res) => {
                     new Date(yield.harvest_date).toISOString().split('T')[0] : null,
                 volume: parseFloat(yield.volume || 0),
                 value: parseFloat(yield.Value || 0),
-                area_harvested: parseFloat(yield.area_harvested.toFixed(2) || 0)
+                area_harvested: formatAreaHarvested(yield.area_harvested)
             }));
         }
 
