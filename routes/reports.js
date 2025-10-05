@@ -670,7 +670,7 @@ router.get('/farmer-yields-report', async (req, res) => {
             NULL as harvest_date,
             SUM(fy.volume) as volume,
             SUM(fy.Value) as Value,
-            SUM(fy.area_harvested) as area_harvested,  // Added this field with SUM
+            SUM(fy.area_harvested) as area_harvested,   
             YEAR(fy.harvest_date) as harvest_year,
             MONTH(fy.harvest_date) as harvest_month,
             DATE_FORMAT(fy.harvest_date, '%Y-%m') as month_year,
@@ -703,7 +703,7 @@ router.get('/farmer-yields-report', async (req, res) => {
             NULL as harvest_date,
             SUM(fy.volume) as volume,
             SUM(fy.Value) as Value,
-            SUM(fy.area_harvested) as area_harvested,  // Added this field with SUM
+            SUM(fy.area_harvested) as area_harvested,  
             YEAR(fy.harvest_date) as harvest_year,
             NULL as harvest_month,
             YEAR(fy.harvest_date) as year,
@@ -740,7 +740,7 @@ router.get('/farmer-yields-report', async (req, res) => {
           association: yield.association_name || 'None',
           volume: parseFloat(yield.volume) || 0,
           total_value: yield.Value ? parseFloat(yield.Value) : null,
-          area_harvested: yield.area_harvested ? parseFloat(yield.area_harvested) : null  // Added this field
+          area_harvested: yield.area_harvested ? parseFloat(yield.area_harvested) : null   
         };
   
         if (viewBy === 'Monthly') {
