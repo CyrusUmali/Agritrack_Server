@@ -1511,7 +1511,7 @@ router.post('/users', authenticate, async (req, res) => {
         }
       } else {
         // Create new farmer record (existing code)
-        const DEFAULT_IMAGE_URL = 'https://res.cloudinary.com/dk41ykxsq/image/upload/v1745590990/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIzLTAxL3JtNjA5LXNvbGlkaWNvbi13LTAwMi1wLnBuZw-removebg-preview_myrmrf.png';
+        const DEFAULT_IMAGE_URL = 'https://res.cloudinary.com/dk41ykxsq/image/upload/v1759745073/user_rstauz.png';
         const DEFAULT_PHONE = '---';
 
         // Parse the full name into components
