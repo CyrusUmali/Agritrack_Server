@@ -128,19 +128,18 @@ const getSectorColor = (sectorId) => {
       return 0xFF4CAF50;  
     case 2: // Corn
       return 0x7FFFFF00; 
-    case 3: // highvaluecrop
+    case 3: // High value crop
       return 0xFF9C27B0;  
-    case 4: // livestock
-    return 0x80987665;
-    case 5: // fishery
+    case 4: // Livestock
+      return 0xFFFF5722;  // Deep orange
+    case 5: // Fishery
       return 0xFF2196F3; 
-    case 6: // organic
-      return 0xFF9E9E9E; // Grey with 0.5 opacity equivalent
+    case 6: // Organic
+      return 0xFF9E9E9E; // Grey
     default:
       return 0xFF2196F3; // Default blue color
   }
 };
-
 
 
 router.get('/farms-view', async (req, res) => {
