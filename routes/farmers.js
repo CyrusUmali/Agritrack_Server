@@ -355,7 +355,6 @@ router.post('/farmers', authenticate, async (req, res) => {
 
 
 
-
 // GET a specific farmer by ID
 router.get('/farmers/:id', authenticate, async (req, res) => {
   try {
@@ -393,6 +392,11 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
 
     const farmer = farmers[0];
 
+    // Format association as "id: assocname" if both exist
+    const association = farmer.association_id && farmer.association_name 
+      ? `${farmer.association_id}: ${farmer.association_name}`
+      : null;
+
     res.json({
       success: true,
       farmer: {
@@ -427,7 +431,7 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
         person_to_notify: farmer.person_to_notify || null,
         ptn_contact: farmer.ptn_contact || null,
         ptn_relationship: farmer.ptn_relationship || null,
-        association: farmer.association_name || null,
+        association: association, // Now formatted as "id: assocname"
         accountStatus: farmer.accountStatus || null // Added user status from users table
       }
     });
@@ -445,9 +449,6 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
-
-
-
 
 
 // PUT update farmer
