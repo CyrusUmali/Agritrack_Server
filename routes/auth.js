@@ -910,7 +910,7 @@ router.post('/register-farmer', async (req, res) => {
         ptnRelationship || null,
         extractSectorId(sector),
         extractId(association),
-        'https://res.cloudinary.com/dk41ykxsq/image/upload/v1749288962/testUpload/law0n3hfrlptwi9qsvl7.png', // Default image URL
+        'https://res.cloudinary.com/dk41ykxsq/image/upload/v1759745073/user_rstauz.png', // Default image URL
       ]
     );
     // 7. Get the complete farmer record with user info
