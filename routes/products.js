@@ -119,8 +119,8 @@ router.delete('/products/:id',authenticate , async (req, res) => {
 
 router.post('/products', authenticate, async (req, res) => {
   try {
-    const { name, description, sector_id, imageUrl } = req.body;
-    const userId = req.user.dbUser.id; // Assuming you want to track who created the product
+    let { name, description, sector_id, imageUrl } = req.body;
+    const userId = req.user.dbUser.id;
 
     // Validate required fields
     if (!name || !description || !sector_id) {
@@ -130,6 +130,9 @@ router.post('/products', authenticate, async (req, res) => {
         required: ['name', 'description', 'sector_id']
       });
     }
+
+    // Capitalize the first character of product name
+    name = name.charAt(0).toUpperCase() + name.slice(1);
 
     // Check if sector exists
     const [sectorCheck] = await pool.query(
@@ -151,8 +154,8 @@ router.post('/products', authenticate, async (req, res) => {
     // Insert new product including optional imageUrl
     const [result] = await pool.query(
       `INSERT INTO farm_products 
-   (name, description, sector_id, imgUrl, created_at, updated_at) 
-   VALUES (?, ?, ?, ?, NOW(), NOW())`,
+       (name, description, sector_id, imgUrl, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, NOW(), NOW())`,
       [name, description, sector_id, imageUrl || null]
     );
 
@@ -202,6 +205,7 @@ router.post('/products', authenticate, async (req, res) => {
     });
   }
 });
+
 
 
 router.put('/products/:id', authenticate, async (req, res) => {
