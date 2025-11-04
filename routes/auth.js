@@ -1736,61 +1736,8 @@ router.get('/users', authenticate, async (req, res) => {
 });
  
  
-
-
-// Add this to your Express routes
-router.get('/debug/time', (req, res) => {
-  res.json({
-    serverTime: new Date(),
-    serverTimeUTC: new Date().toISOString(),
-    serverTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone
-  });
-});
-
  
-router.get('/db-test', async (req, res) => {
-  try {
-    // Simple query to test the connection
-    const [result] = await pool.query('SELECT 1 + 1 AS solution');
-    
-    res.json({
-      success: true,
-      message: 'Database connection is workingsss',
-      data: {
-        testCalculation: result[0].solution, // Should be 2
-        serverTime: new Date().toISOString()
-      }
-    });
-  } catch (error) {
-    console.error('Database connection test failed:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Database connection test failed',
-      error: error.message
-    });
-  }
-}); 
 
-// Test route to send email
-router.post('/send-email', async (req, res) => {
-  const { to, subject, message } = req.body;
-
-  if (!to || !subject || !message) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
-  try {
-    const result = await sendTestEmail(to, subject, message);
-    res.status(200).json({ message: 'Email sent successfully', data: result });
-  } catch (error) {
-    console.error('Error sending email:', error);
-    res.status(500).json({ error: 'Failed to send email' });
-  }
-}); 
-// Generate a random 6-digit OTP
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-} 
  
 
 
@@ -1857,35 +1804,7 @@ router.get('/top-contributors',authenticate ,async (req, res) => {
   }
 });
 
-router.get('/top-test', async (req, res) => {
-  
-
-
-  try {
-    // Simple query to test the connection
-    const [result] = await pool.query('SELECT 1 + 1 AS solution');
-    
-    res.json({
-      success: true,
-      message: 'Database connection is workingsss',
-      data: {
-        testCalculation: result[0].solution, // Should be 2
-        serverTime: new Date().toISOString()
-      }
-    });
-  } catch (error) {
-    console.error('Database connection test failed:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Database connection test failed',
-      error: error.message
-    });
-  }
-
-
-
-});
-
+ 
 
 router.delete('/users/:id', authenticate, async (req, res) => {
   try {

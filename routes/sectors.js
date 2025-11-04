@@ -9,7 +9,7 @@ const pool = require('../connect');
  
 
 
-router.get('/yield-data-by-sector', async (req, res) => {
+router.get('/yield-data-by-sector', authenticate , async (req, res) => {
     const { sectorId, year } = req.query; // Get both from query params
 
     try {
@@ -121,7 +121,7 @@ router.get('/yield-data-by-sector', async (req, res) => {
 
  
 
-router.get('/sectors/stats', async (req, res) => {
+router.get('/sectors/stats', authenticate ,  async (req, res) => {
   try {
     // Query to get all sectors with their statistics
     const [sectors] = await pool.query(`
@@ -195,7 +195,7 @@ router.get('/sectors/stats', async (req, res) => {
 }); 
 
 
-router.get('/sectors', async (req, res) => {
+router.get('/sectors', authenticate ,  async (req, res) => {
   try {
     const { year } = req.query;
 
@@ -351,7 +351,7 @@ router.get('/sectors', async (req, res) => {
 
 
 
-router.get('/sectors/:sectorId', async (req, res) => {
+router.get('/sectors/:sectorId', authenticate ,  async (req, res) => {
   try {
     const { sectorId } = req.params;
     const { year } = req.query;
@@ -490,7 +490,7 @@ router.get('/sectors/:sectorId', async (req, res) => {
 
 
 
-router.get('/shi-values', async (req, res) => {
+router.get('/shi-values', authenticate ,  async (req, res) => {
   try {
     const { year, farmerId } = req.query;
 
@@ -649,7 +649,7 @@ router.get('/shi-values', async (req, res) => {
 
 
 
-router.get('/sector-yield-trends', async (req, res) => {
+router.get('/sector-yield-trends', authenticate ,  async (req, res) => {
   try {
     // First get all sectors
     const [sectors] = await pool.query(`

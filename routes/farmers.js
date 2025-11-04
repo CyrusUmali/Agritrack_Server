@@ -76,7 +76,7 @@ router.get('/farmers', authenticate, async (req, res) => {
 });
 
 
-router.get('/farmer-statistics', async (req, res) => {
+router.get('/farmer-statistics', authenticate,  async (req, res) => {
   try {
     const { year } = req.query;
     const userSectorId = req.user?.dbUser?.sector_id;
@@ -743,7 +743,7 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
 
 
 // DELETE farmer
-router.delete('/farmers/:id', async (req, res) => {
+router.delete('/farmers/:id', authenticate ,  async (req, res) => {
   try {
     const farmerId = req.params.id;
 

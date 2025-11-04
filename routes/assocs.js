@@ -9,7 +9,7 @@ const pool = require('../connect');
 
 
 
-router.get('/yield-data', async (req, res) => {
+router.get('/yield-data', authenticate ,  async (req, res) => {
     const { assocId, year } = req.query; // Get both from query params
 
     try {

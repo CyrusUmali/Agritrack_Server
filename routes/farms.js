@@ -142,7 +142,7 @@ const getSectorColor = (sectorId) => {
 };
 
 
-router.get('/farms-view', async (req, res) => {
+router.get('/farms-view', authenticate ,  async (req, res) => {
   try {
     // Get farmerId from query parameters if it exists
     const { farmerId } = req.query;
