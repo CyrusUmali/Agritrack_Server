@@ -351,6 +351,41 @@ router.get('/associations', async (req, res) => {
 
 
 
+router.get('/associationsList', async (req, res) => {
+  try {
+    // Get only association names
+    const [associations] = await pool.query(`
+      SELECT 
+        id,
+        name
+      FROM associations 
+      ORDER BY name ASC
+    `);
+
+    res.json({
+      success: true,
+      associations: associations.map(assoc => ({
+        id: assoc.id,
+        name: assoc.name
+      }))
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch associations list:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch associations list',
+      error: {
+        code: 'ASSOCIATIONS_LIST_FETCH_ERROR',
+        details: error.message,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
+
+
 
  
 // Create new association
