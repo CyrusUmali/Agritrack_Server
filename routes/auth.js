@@ -11,6 +11,500 @@ const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 
 
+// Helper functions (make sure these are defined)
+function _extractSubject(text) {
+  // Extract first line or first 50 characters as subject
+  const firstLine = text.split('\n')[0];
+  return firstLine.length > 50 ? firstLine.substring(0, 50) + '...' : firstLine;
+}
+
+function _extractPreview(text) {
+  // Remove first line and get next part as preview
+  const lines = text.split('\n');
+  if (lines.length > 1) {
+    return lines[1].length > 100 ? lines[1].substring(0, 100) + '...' : lines[1];
+  }
+  return text.length > 100 ? text.substring(0, 100) + '...' : text;
+}  
+// POST /reply - Send a reply to an existing message
+router.post('/reply', authenticate, async (req, res) => {
+  try {
+    const { ticket_id, user_id, message, subject } = req.body;
+
+    // Validation
+    if (!ticket_id || !user_id || !message) {
+      return res.status(400).json({
+        success: false,
+        message: 'ticket_id, user_id, and message are required fields'
+      });
+    }
+
+    if (message.length > 1200) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message must be less than 1200 characters'
+      });
+    }
+
+    // First, get the original message to determine receiver
+    const [originalMessage] = await pool.query(
+      `SELECT * FROM inbox WHERE id = ?`,
+      [ticket_id]
+    );
+
+    if (originalMessage.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Original message not found'
+      });
+    }
+
+    const original = originalMessage[0];
+    
+    // Get current user's role
+    const [currentUser] = await pool.query(
+      `SELECT role FROM users WHERE id = ?`,
+      [user_id]
+    );
+
+    if (currentUser.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const userRole = currentUser[0].role;
+    
+    // Determine who should receive this reply and set sender_id accordingly
+    let receiver_id = null;
+    let final_sender_id = null;
+
+    // If user is a farmer, use their user_id as sender_id
+    if (userRole === 'farmer') {
+      final_sender_id = user_id;
+      
+      // Farmer is replying to a message they received
+      if (parseInt(user_id) === original.receiver_id) {
+        receiver_id = original.sender_id; // Reply to original sender
+      } 
+      // Farmer is replying to a message they sent (shouldn't normally happen)
+      else if (parseInt(user_id) === original.sender_id) {
+        receiver_id = original.receiver_id; // Reply to original receiver
+      }
+      // Farmer trying to reply to someone else's message
+      else {
+        return res.status(403).json({
+          success: false,
+          message: 'You are not authorized to reply to this message'
+        });
+      }
+    } 
+    // If user is NOT a farmer (admin, officer, etc.), set sender_id to null
+    else {
+      final_sender_id = null; // Non-farmers have null sender_id
+      
+      // Admin/Officer can reply to any message
+      // Determine receiver based on the original message
+      if (original.sender_id === null) {
+        // Original was sent by admin/officer, so reply goes to the farmer who received it
+        receiver_id = original.receiver_id;
+      } else {
+        // Original was sent by a farmer, so reply goes back to that farmer
+        receiver_id = original.sender_id;
+      }
+    }
+
+    // Create the reply message
+    const [result] = await pool.query(
+      `INSERT INTO inbox (text, sender_id, receiver_id, status, created_at) 
+       VALUES (?, ?, ?, 'unread', NOW())`,
+      [message, final_sender_id, receiver_id]
+    );
+
+    // Update the original message status to indicate there's a reply
+    await pool.query(
+      `UPDATE inbox SET status = 'in_progress' WHERE id = ?`,
+      [ticket_id]
+    );
+
+    // Fetch the created reply with user information
+    const [newReply] = await pool.query(
+      `SELECT 
+         i.id,
+         i.text,
+         i.sender_id,
+         i.receiver_id,
+         i.created_at,
+         i.status,
+         CASE 
+           WHEN i.sender_id IS NULL THEN 'Support Team'
+           ELSE sender.name
+         END as sender_name,
+         CASE 
+           WHEN i.receiver_id IS NULL THEN 'Admin'
+           ELSE COALESCE(receiver.name, 'Unknown')
+         END as receiver_name
+       FROM inbox i 
+       LEFT JOIN users sender ON i.sender_id = sender.id
+       LEFT JOIN users receiver ON i.receiver_id = receiver.id
+       WHERE i.id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Reply sent successfully',
+      data: newReply[0]
+    });
+
+  } catch (error) {
+    console.error('Failed to send reply:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send reply',
+      error: {
+        code: 'REPLY_SEND_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+
+
+// GET /inbox - Retrieve inbox messages
+router.get('/inbox', authenticate, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, status } = req.query;
+    const offset = (page - 1) * limit;
+    const user_id = req.user.id;
+    const user_role = req.user.role;
+
+    // Build WHERE clause dynamically based on user role
+    let whereClause = 'WHERE 1=1';
+    const queryParams = [];
+
+    if (status) {
+      whereClause += ' AND i.status = ?';
+      queryParams.push(status);
+    }
+
+    // If user is a farmer, show messages where they are the receiver OR they sent to support
+    if (user_role === 'farmer') {
+      whereClause += ' AND (i.receiver_id = ? OR (i.sender_id = ? AND i.receiver_id IS NULL))';
+      queryParams.push(user_id, user_id);
+    } 
+    // If user is NOT a farmer (admin, officer, etc.), show messages where receiver_id IS NULL (support messages)
+    else {
+      whereClause += ' AND i.receiver_id IS NULL';
+      // No need to add user_id to queryParams for non-farmers since we're fetching all support messages
+    }
+
+    // Get total count for pagination
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) as total FROM inbox i ${whereClause}`,
+      queryParams
+    );
+
+    // Get paginated results with sender/receiver information
+    const selectQuery = `
+      SELECT 
+        i.id,
+        i.text,
+        i.sender_id,
+        i.receiver_id,
+        i.created_at,
+        i.status,
+        sender.name as sender_name,
+        CASE 
+          WHEN i.receiver_id IS NULL THEN 'Support Team'
+          ELSE COALESCE(receiver.name, 'Unknown')
+        END as receiver_name
+       FROM inbox i 
+       LEFT JOIN users sender ON i.sender_id = sender.id
+       LEFT JOIN users receiver ON i.receiver_id = receiver.id
+       ${whereClause}
+       ORDER BY i.created_at DESC
+       LIMIT ? OFFSET ?
+    `;
+
+    const selectParams = [...queryParams, parseInt(limit), offset];
+
+    const [inboxItems] = await pool.query(selectQuery, selectParams);
+
+    // Format the response based on user role
+    const formattedMessages = inboxItems.map(message => {
+      const baseMessage = {
+        id: message.id,
+        text: message.text,
+        created_at: message.created_at,
+        status: message.status,
+        subject: _extractSubject(message.text),
+        preview: _extractPreview(message.text),
+        isRead: message.status !== 'unread'
+      };
+
+      // For farmers
+      if (user_role === 'farmer') {
+        if (message.sender_id === user_id) {
+          // Message sent by farmer to support
+          return {
+            ...baseMessage,
+            from: 'You',
+            to: 'Support Team',
+            direction: 'sent'
+          };
+        } else {
+          // Message received by farmer (from support or other users)
+          return {
+            ...baseMessage,
+            from: message.sender_name || 'Support Team',
+            to: 'You',
+            direction: 'received'
+          };
+        }
+      }
+      // For non-farmers (admin, officers, etc.)
+      else {
+        // All messages in non-farmer inbox are received support requests
+        return {
+          ...baseMessage,
+          from: message.sender_name || 'Unknown User',
+          to: 'You',
+          direction: 'received'
+        };
+      }
+    });
+
+    res.json({
+      success: true,
+      data: formattedMessages,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        pages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch inbox:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch inbox messages',
+      error: {
+        code: 'INBOX_FETCH_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+
+
+// POST /inbox - Create a new inbox message
+router.post('/submit-issue', authenticate, async (req, res) => {
+  try {
+    const { problemDescription, senderId, receiverId, status = null } = req.body;
+
+    // Validation
+    if (!problemDescription || !senderId) {
+      return res.status(400).json({
+        success: false,
+        message: 'problemDescription and senderId are required fields'
+      });
+    }
+
+    if (problemDescription.length > 1200) {
+      return res.status(400).json({
+        success: false,
+        message: 'Text must be less than 1200 characters'
+      });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO inbox (text, sender_id, receiver_id, status, created_at) 
+       VALUES (?, ?, ?, 'unread', NOW())`,
+      [problemDescription, senderId, receiverId]
+    );
+
+    
+
+    // Fetch the created record
+    const [newInboxItem] = await pool.query(
+      `SELECT * FROM inbox WHERE id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Inbox message created successfully',
+      data: newInboxItem[0]
+    });
+
+  } catch (error) {
+    console.error('Failed to create inbox message:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create inbox message',
+      error: {
+        code: 'INBOX_CREATE_ERROR',
+        details: error.message
+      }
+    });
+  }
+}); 
+
+
+
+ // GET /auth/sent-messages - Retrieve sent messages
+router.get('/sent-messages', authenticate, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, userId } = req.query; // Get userId from query params
+    const offset = (page - 1) * limit;
+
+    console.log('Fetching sent messages for user:', userId);
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required in query parameters'
+      });
+    }
+
+    // First, get the user's role to determine how to query
+    const [userResult] = await pool.query(
+      `SELECT role FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    if (userResult.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const userRole = userResult[0].role;
+    let countQuery, countParams, selectQuery, selectParams;
+
+    if (userRole === 'farmer') {
+      // For farmers: show messages where they are the sender (sender_id = their user_id)
+      countQuery = `SELECT COUNT(*) as total FROM inbox WHERE sender_id = ?`;
+      countParams = [userId];
+      
+      selectQuery = `
+        SELECT 
+          i.id, 
+          i.text, 
+          i.sender_id, 
+          i.receiver_id,
+          CASE 
+            WHEN i.receiver_id IS NULL THEN 'Office Admin'
+            ELSE CONCAT(u.fname, ' ', u.lname)
+          END as receiver_name,
+          i.status,
+          i.created_at
+        FROM inbox i
+        LEFT JOIN users u ON i.receiver_id = u.id
+        WHERE i.sender_id = ? 
+        ORDER BY i.created_at DESC 
+        LIMIT ? OFFSET ?
+      `;
+      selectParams = [userId, parseInt(limit), offset];
+    } else {
+      // For non-farmers (admin, officers): show messages where sender_id IS NULL
+      // (since non-farmers' sent messages have null sender_id)
+      countQuery = `SELECT COUNT(*) as total FROM inbox WHERE sender_id IS NULL`;
+      countParams = [];
+      
+      selectQuery = `
+        SELECT 
+          i.id, 
+          i.text, 
+          i.sender_id, 
+          i.receiver_id,
+          CONCAT(u.fname, ' ', u.lname) as receiver_name,
+          i.status,
+          i.created_at
+        FROM inbox i
+        LEFT JOIN users u ON i.receiver_id = u.id
+        WHERE i.sender_id IS NULL 
+        ORDER BY i.created_at DESC 
+        LIMIT ? OFFSET ?
+      `;
+      selectParams = [parseInt(limit), offset];
+    }
+
+    // Get total count
+    const [countResult] = await pool.query(countQuery, countParams);
+    const total = countResult[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    console.log(`Total sent messages found for ${userRole} user ${userId}:`, total);
+
+    // If no messages found, return empty array
+    if (total === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: 0,
+          pages: 0
+        }
+      });
+    }
+
+    // Fetch sent messages
+    const [messages] = await pool.query(selectQuery, selectParams);
+
+    console.log('Messages retrieved:', messages.length);
+
+    // Format the response to ensure consistent structure
+    const formattedMessages = messages.map(msg => ({
+      id: msg.id,
+      text: msg.text,
+      sender_id: msg.sender_id,
+      receiver_id: msg.receiver_id,
+      receiver_name: msg.receiver_name || 'Unknown',
+      status: msg.status,
+      created_at: msg.created_at,
+      // Add additional fields for frontend consistency
+      subject: _extractSubject(msg.text),
+      preview: _extractPreview(msg.text),
+      from: userRole === 'farmer' ? 'You' : 'Support Team'
+    }));
+
+    res.json({
+      success: true,
+      data: formattedMessages,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        pages: totalPages
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch sent messages:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sent messages',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+ 
+
+
+
 // Reset password after OTP verification
 router.post('/reset-password', async (req, res) => {
   try {
@@ -1739,6 +2233,12 @@ router.get('/users', authenticate, async (req, res) => {
  
 
  
+
+
+
+
+
+
 
 
 router.get('/top-contributors',authenticate ,async (req, res) => {
