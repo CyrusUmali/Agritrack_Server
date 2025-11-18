@@ -9,6 +9,287 @@ const axios = require('axios');
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 
+// GET /notifications/farmer/:farmerId - Get notifications for specific farmer
+router.get('/notifications/:farmerId', authenticate, async (req, res) => {
+  try {
+    const { farmerId } = req.params;
+    
+    const [notifications] = await pool.query(`
+      SELECT 
+        n.*,
+        f.name as farmer_name,
+        a.title as announcement_title,
+        a.message as announcement_content,
+        a.recipient_type as announcement_type
+      FROM notifications n
+      LEFT JOIN farmers f ON n.farmer_id = f.id
+      LEFT JOIN announcements a ON n.announcement_id = a.id
+      WHERE n.farmer_id = ?
+      ORDER BY n.created_at DESC
+    `, [farmerId]);
+
+    res.status(200).json({
+      success: true,
+      message: 'Farmer notifications fetched successfully',
+      data: notifications
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch farmer notifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer notifications',
+      error: {
+        code: 'FARMER_NOTIFICATIONS_FETCH_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+// DELETE /notifications/farmer/:notificationId - Delete specific farmer notification
+router.delete('/notifications/:notificationId', authenticate, async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    
+    // First, verify the notification exists
+    const [existingNotifications] = await pool.query(
+      'SELECT * FROM notifications WHERE id = ?',
+      [notificationId]
+    );
+
+    if (existingNotifications.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found',
+        error: {
+          code: 'NOTIFICATION_NOT_FOUND',
+          details: 'The specified notification does not exist'
+        }
+      });
+    }
+
+    // Delete the notification
+    const [result] = await pool.query(
+      'DELETE FROM notifications WHERE id = ?',
+      [notificationId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Failed to delete notification',
+        error: {
+          code: 'DELETE_FAILED',
+          details: 'No notification was deleted'
+        }
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Notification deleted successfully',
+      data: {
+        deletedId: notificationId
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to delete notification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notification',
+      error: {
+        code: 'NOTIFICATION_DELETE_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+// DELETE /announcements/:id - Delete an announcement
+router.delete('/announcements/:id', authenticate, async (req, res) => {
+  try {
+    const announcementId = req.params.id;
+
+    // Check if announcement exists
+    const [announcement] = await pool.query(
+      'SELECT * FROM announcements WHERE id = ?',
+      [announcementId]
+    );
+
+    if (announcement.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Announcement not found'
+      });
+    }
+
+    // Delete related notifications first (due to foreign key constraints)
+    await pool.query(
+      'DELETE FROM notifications WHERE announcement_id = ?',
+      [announcementId]
+    );
+
+    // Delete the announcement
+    await pool.query(
+      'DELETE FROM announcements WHERE id = ?',
+      [announcementId]
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Announcement deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Failed to delete announcement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete announcement',
+      error: {
+        code: 'ANNOUNCEMENT_DELETE_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+// GET /announcements - Get all announcements
+router.get('/announcements', authenticate, async (req, res) => {
+  try {
+    const [announcements] = await pool.query(`
+      SELECT 
+        a.*,
+        f.name as farmer_name,
+        COUNT(n.id) as total_recipients,
+        SUM(CASE WHEN n.status = 'read' THEN 1 ELSE 0 END) as read_count
+      FROM announcements a
+      LEFT JOIN farmers f ON a.farmer_id = f.id
+      LEFT JOIN notifications n ON n.announcement_id = a.id
+      GROUP BY a.id
+      ORDER BY a.created_at DESC
+    `);
+
+    res.status(200).json({
+      success: true,
+      message: 'Announcements fetched successfully',
+      data: announcements
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch announcements:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch announcements',
+      error: {
+        code: 'ANNOUNCEMENTS_FETCH_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+
+
+// POST /announcements - Create and send a new announcement
+router.post('/announcements', authenticate, async (req, res) => {
+  try {
+    const { title, message, recipient_type, farmer_id } = req.body;
+
+    // Validation
+    if (!title || !message || !recipient_type) {
+      return res.status(400).json({
+        success: false,
+        message: 'title, message, and recipient_type are required fields'
+      });
+    }
+
+    if (title.length > 255) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title must be less than 255 characters'
+      });
+    }
+
+    if (message.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message must be less than 2000 characters'
+      });
+    }
+
+    if (!['everyone', 'specific'].includes(recipient_type)) {
+      return res.status(400).json({
+        success: false,
+        message: 'recipient_type must be either "everyone" or "specific"'
+      });
+    }
+
+    if (recipient_type === 'specific' && !farmer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'farmer_id is required when recipient_type is "specific"'
+      });
+    }
+
+    // Insert announcement into database
+    const [result] = await pool.query(
+      `INSERT INTO announcements (title, message, recipient_type, farmer_id, status, created_at) 
+       VALUES (?, ?, ?, ?, 'sent', NOW())`,
+      [title, message, recipient_type, farmer_id]
+    );
+
+    // Fetch the created announcement
+    const [newAnnouncement] = await pool.query(
+      `SELECT * FROM announcements WHERE id = ?`,
+      [result.insertId]
+    );
+
+    // If sending to everyone, you might want to create individual notifications for each farmer
+    if (recipient_type === 'everyone') {
+      // Get all farmers
+      const [allFarmers] = await pool.query('SELECT id FROM farmers WHERE status = "active"');
+      
+      // Create notifications for each farmer (optional - depends on your notification system)
+      for (const farmer of allFarmers) {
+        await pool.query(
+          `INSERT INTO notifications (farmer_id, announcement_id, type, status, created_at) 
+           VALUES (?, ?, 'announcement', 'unread', NOW())`,
+          [farmer.id, result.insertId]
+        );
+      }
+    } else if (recipient_type === 'specific' && farmer_id) {
+      // Create notification for specific farmer
+      await pool.query(
+        `INSERT INTO notifications (farmer_id, announcement_id, type, status, created_at) 
+         VALUES (?, ?, 'announcement', 'unread', NOW())`,
+        [farmer_id, result.insertId]
+      );
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Announcement sent successfully',
+      data: newAnnouncement[0]
+    });
+
+  } catch (error) {
+    console.error('Failed to send announcement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send announcement',
+      error: {
+        code: 'ANNOUNCEMENT_CREATE_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
 
 
 // Helper functions (make sure these are defined)
