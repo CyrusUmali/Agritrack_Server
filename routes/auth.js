@@ -9,6 +9,147 @@ const axios = require('axios');
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 
+
+
+// GET /notifications/farmer/:farmerId/unread-count - Get unread notifications count for farmer
+router.get('/notifications/farmer/:farmerId/unread-count', authenticate, async (req, res) => {
+  try {
+    const { farmerId } = req.params;
+    
+    // Validate farmerId
+    if (!farmerId || isNaN(farmerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid farmer ID',
+        error: {
+          code: 'INVALID_FARMER_ID',
+          details: 'Farmer ID must be a valid number'
+        }
+      });
+    }
+
+    // Query to count unread notifications for the specific farmer
+    const [result] = await pool.query(
+      `SELECT COUNT(*) as unread_count 
+       FROM notifications 
+       WHERE farmer_id = ? AND status = 'unread'`,
+      [farmerId]
+    );
+
+    const unreadCount = result[0]?.unread_count || 0;
+
+    res.status(200).json({
+      success: true,
+      message: 'Unread notifications count fetched successfully',
+      data: {
+        farmerId: parseInt(farmerId),
+        unreadCount: unreadCount,
+        hasUnread: unreadCount > 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch unread notifications count:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch unread notifications count',
+      error: {
+        code: 'UNREAD_COUNT_FETCH_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
+
+// PUT /notifications/:notificationId - Update notification status (with default to read)
+router.put('/notifications/:notificationId', authenticate, async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const { status = 'read' } = req.body; // Default to 'read' if not provided
+    
+    // Validate status
+    if (!['read', 'unread'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status',
+        error: {
+          code: 'INVALID_STATUS',
+          details: 'Status must be either "read" or "unread"'
+        }
+      });
+    }
+
+    // First, verify the notification exists
+    const [existingNotifications] = await pool.query(
+      'SELECT * FROM notifications WHERE id = ?',
+      [notificationId]
+    );
+
+    if (existingNotifications.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found',
+        error: {
+          code: 'NOTIFICATION_NOT_FOUND',
+          details: 'The specified notification does not exist'
+        }
+      });
+    }
+
+    // Update the notification status
+    const updateFields = [];
+    const updateValues = [];
+    
+    if (status === 'read') {
+      updateFields.push('status = ?', 'read_at = NOW()');
+      updateValues.push('read');
+    } else {
+      updateFields.push('status = ?', 'read_at = NULL');
+      updateValues.push('unread');
+    }
+    
+    updateValues.push(notificationId);
+
+    const [result] = await pool.query(
+      `UPDATE notifications SET ${updateFields.join(', ')} WHERE id = ?`,
+      updateValues
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to update notification status',
+        error: {
+          code: 'UPDATE_FAILED',
+          details: 'No notification was updated'
+        }
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Notification marked as ${status} successfully`,
+      data: {
+        notificationId: notificationId,
+        status: status,
+        readAt: status === 'read' ? new Date().toISOString() : null
+      }
+    });
+
+  } catch (error) {
+    console.error('Failed to update notification status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update notification status',
+      error: {
+        code: 'NOTIFICATION_UPDATE_ERROR',
+        details: error.message
+      }
+    });
+  }
+});
+
 // GET /notifications/farmer/:farmerId - Get notifications for specific farmer
 router.get('/notifications/:farmerId', authenticate, async (req, res) => {
   try {
@@ -196,7 +337,7 @@ router.get('/announcements', authenticate, async (req, res) => {
 
 
 // POST /announcements - Create and send a new announcement
-router.post('/announcements', authenticate, async (req, res) => {
+router.post('/announcements', async (req, res) => {
   try {
     const { title, message, recipient_type, farmer_id } = req.body;
 
