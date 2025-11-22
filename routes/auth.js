@@ -1719,8 +1719,7 @@ router.post('/register-farmer', async (req, res) => {
       maleMembers,
       femaleMembers,
       motherMaidenName,
-      religion,
-      address,
+      religion, 
       personToNotify,
       ptnContact,
       ptnRelationship,
@@ -1798,9 +1797,9 @@ router.post('/register-farmer', async (req, res) => {
       `INSERT INTO farmers 
       (user_id, name, firstname, middlename, surname, extension, email, phone, barangay, 
        sex, civil_status, spouse_name, house_hold_head, household_num, 
-       male_members_num, female_members_num, mother_maiden_name, religion, address, 
+       male_members_num, female_members_num, mother_maiden_name, religion, 
        person_to_notify, ptn_contact, ptn_relationship, sector_id, assoc_id, imageUrl, created_at, updated_at) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,   ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         mysqlUserInsertResult.insertId,
         name,
@@ -1819,8 +1818,7 @@ router.post('/register-farmer', async (req, res) => {
         maleMembers || 0,
         femaleMembers || 0,
         motherMaidenName || null,
-        religion || null,
-        address || null,
+        religion || null, 
         personToNotify || null,
         ptnContact || null,
         ptnRelationship || null,
@@ -1878,8 +1876,7 @@ router.post('/register-farmer', async (req, res) => {
           motherMaidenName: completeFarmer[0].mother_maiden_name,
           religion: completeFarmer[0].religion
         },
-        contactInfo: {
-          address: completeFarmer[0].address,
+        contactInfo: { 
           personToNotify: completeFarmer[0].person_to_notify,
           ptnContact: completeFarmer[0].ptn_contact,
           ptnRelationship: completeFarmer[0].ptn_relationship

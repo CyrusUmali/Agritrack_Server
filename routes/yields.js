@@ -561,7 +561,7 @@ router.get('/yields/farm/:farmId',authenticate ,  async (req, res) => {
 
 
 
-router.post('/yields/generate' , authenticate ,  async (req, res) => {
+router.post('/yields/generate',  async (req, res) => {
     try {
         const { farmer_id, farm_id, product_id, year, count = 20 } = req.body;
 
