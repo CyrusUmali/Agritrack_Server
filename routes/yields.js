@@ -72,7 +72,10 @@ router.get('/yields/:id', authenticate, async (req, res) => {
 
 
 
-router.put('/yields/:id',  authenticate ,  async (req, res) => {
+
+
+
+router.put('/yields/:id', authenticate, async (req, res) => {
     try {
         const {
             farmer_id,
@@ -100,11 +103,34 @@ router.put('/yields/:id',  authenticate ,  async (req, res) => {
             });
         }
 
+        // Get the current yield data before update to compare changes
+        const [currentYields] = await pool.query(
+            `SELECT 
+                fy.*,
+                f.firstname,
+                f.middlename,
+                f.surname,
+                f.extension,
+                p.name as product_name
+            FROM farmer_yield fy
+            LEFT JOIN farmers f ON fy.farmer_id = f.id
+            LEFT JOIN farm_products p ON fy.product_id = p.id
+            WHERE fy.id = ?`,
+            [req.params.id]
+        );
+
+        if (currentYields.length === 0) {
+            return res.status(404).json({ success: false, message: 'Yield not found' });
+        }
+
+        const currentYield = currentYields[0];
+
         // Convert ISO date to MySQL compatible format
         const mysqlHarvestDate = harvest_date
             ? new Date(harvest_date).toISOString().slice(0, 19).replace('T', ' ')
             : null;
 
+        // Update the yield
         await pool.query(
             `UPDATE farmer_yield 
          SET 
@@ -135,6 +161,7 @@ router.put('/yields/:id',  authenticate ,  async (req, res) => {
             ]
         );
 
+        // Get the updated yield with joins
         const [yields] = await pool.query(
             `SELECT 
           fy.*,
@@ -154,11 +181,58 @@ router.put('/yields/:id',  authenticate ,  async (req, res) => {
         );
 
         if (yields.length === 0) {
-            return res.status(404).json({ success: false, message: 'Yield not found' });
+            return res.status(404).json({ success: false, message: 'Yield not found after update' });
         }
 
         const yieldItem = yields[0];
-        res.json({
+
+        // Create announcement for yield update based on status transition
+        try {
+            const farmerName = `${currentYield.firstname}${currentYield.middlename ? ' ' + currentYield.middlename : ''}${currentYield.surname ? ' ' + currentYield.surname : ''}${currentYield.extension ? ' ' + currentYield.extension : ''}`;
+            
+            // Generate announcement based on status transition
+            const { title, message } = generateStatusAnnouncement(
+                currentYield.status, 
+                status, 
+                farmerName, 
+                currentYield.product_name,
+                currentYield.volume,
+                volume,
+                currentYield.area_harvested,
+                area_harvested,
+                notes
+            );
+
+            console.log('Announcement generation result:', { title, message, oldStatus: currentYield.status, newStatus: status });
+
+            // Only create announcement if there's a meaningful status transition
+            if (title && message) {
+                // Insert announcement into database
+                const [announcementResult] = await pool.query(
+                    `INSERT INTO announcements (title, message, recipient_type, farmer_id, status, created_at) 
+                     VALUES (?, ?, 'specific', ?, 'sent', NOW())`,
+                    [title, message, farmer_id]
+                );
+
+                // Create notification for the specific farmer
+                await pool.query(
+                    `INSERT INTO notifications (farmer_id, announcement_id, type, status, created_at) 
+                     VALUES (?, ?, 'announcement', 'unread', NOW())`,
+                    [farmer_id, announcementResult.insertId]
+                );
+
+                console.log(`Announcement created for yield update: ${title}`);
+            } else {
+                console.log('No announcement created - no meaningful status transition');
+            }
+
+        } catch (announcementError) {
+            console.error('Failed to create announcement for yield update:', announcementError);
+            // Don't fail the main request if announcement creation fails
+        }
+
+        // Prepare response
+        const response = {
             success: true,
             yield: {
                 id: yieldItem.id,
@@ -179,18 +253,77 @@ router.put('/yields/:id',  authenticate ,  async (req, res) => {
                 sectorId: yieldItem.sector_id,
                 sector: yieldItem.sector_name || 'dummy'
             }
-        });
+        };
+
+        res.json(response);
+
     } catch (error) {
         console.error('Failed to update yield:', error);
         res.status(500).json({ success: false, message: 'Failed to update yield' });
     }
 });
 
+// Function to generate announcements based on status transitions
+function generateStatusAnnouncement(oldStatus, newStatus, farmerName, productName, oldVolume, newVolume, oldArea, newArea, notes) {
+    
+    // Normalize status to lowercase for consistent comparison
+    const normalizedOldStatus = (oldStatus || '').toLowerCase();
+    const normalizedNewStatus = (newStatus || '').toLowerCase();
+    
+    console.log('Status comparison:', { normalizedOldStatus, normalizedNewStatus });
 
+    // Only create announcements for meaningful status transitions
+    if (normalizedOldStatus === normalizedNewStatus) {
+        return { title: null, message: null };
+    }
 
-
-
-
+    // Status transition announcements
+    switch (normalizedNewStatus) {
+        case 'pending':
+            // Only announce if moving from rejected to pending (resubmission)
+            if (normalizedOldStatus === 'rejected') {
+                return {
+                    title: 'Harvest Resubmitted',
+                    message: `Hello ${farmerName}, thank you for resubmitting your ${productName} harvest. We have received your updated information and will review it shortly.`
+                };
+            }
+            // Don't announce initial pending status (usually created as pending)
+            return { title: null, message: null };
+            
+        case 'accepted':
+            if (normalizedOldStatus === 'pending') {
+                return {
+                    title: 'Harvest Accepted! ✅',
+                    message: `Congratulations ${farmerName}! Your ${productName} harvest has been accepted. Your ${parseFloat(newVolume)}kg yield from ${parseFloat(newArea)} hectares has been verified and approved.`
+                };
+            }
+            if (normalizedOldStatus === 'rejected') {
+                return {
+                    title: 'Harvest Now Accepted',
+                    message: `Good news ${farmerName}! After review, your ${productName} harvest has been accepted. Your ${parseFloat(newVolume)}kg yield is now approved in our system.`
+                };
+            }
+            return { title: null, message: null };
+            
+        case 'rejected':
+            if (normalizedOldStatus === 'pending') {
+                return {
+                    title: 'Harvest Review Required',
+                    message: `Hello ${farmerName}, we need to review your ${productName} harvest submission.Please contact our office for more information.'} You can update your harvest details and resubmit for review.`
+                };
+            }
+            if (normalizedOldStatus === 'accepted') {
+                return {
+                    title: 'Harvest Status Updated',
+                    message: `Hello ${farmerName}, your ${productName} harvest status has been rejected.Please contact support for assistance.'}`
+                };
+            }
+            return { title: null, message: null };
+            
+        default:
+            return { title: null, message: null };
+    }
+}
 
 
 // Delete a yield record
