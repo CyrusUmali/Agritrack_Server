@@ -135,6 +135,7 @@ app.get('/wakeup', (req, res) => {
   // Start self-ping if not already running or if it's been more than 4 hours
   if (!selfPingStartTime || (Date.now() - selfPingStartTime) >= MAX_SELF_PING_DURATION) {
     startSelfPing();
+    pingAicropService();
   }
   
   res.status(200).json({ 
