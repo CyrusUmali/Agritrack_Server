@@ -8,6 +8,457 @@ const axios = require('axios');
 
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+ 
+ // Check if API key exists
+if (!process.env.GEMINI_API_KEY) {
+  console.error('❌ GEMINI_API_KEY is not set in environment variables');
+}
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+
+
+
+
+
+// Add this to your authRoutes.js
+
+// Suitability AI suggestions endpoint (streaming)
+router.post('/suitability/suggestions', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.firebaseUid;
+    const { crop, deficiencies } = req.body;
+
+    console.log(`🌾 Generating suggestions for user ${userId}, crop: ${crop}`);
+
+    if (!crop || !deficiencies || Object.keys(deficiencies).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Kailangan ang crop at deficiencies'
+      });
+    }
+
+    // Build deficiency details for prompt
+    const parameterNames = {
+      'soil_ph': 'Soil pH',
+      'fertility_ec': 'Soil Fertility (EC)',
+      'sunlight': 'Sunlight Exposure',
+      'soil_temp': 'Soil Temperature',
+      'humidity': 'Humidity',
+      'soil_moisture': 'Soil Moisture'
+    };
+
+    const deficiencyDetails = Object.entries(deficiencies)
+      .map(([param, details]) => {
+        const paramName = parameterNames[param] || param;
+        return `• ${paramName}: Kasalukuyan ${details.current} (Ideal na saklaw: ${details.ideal_min}-${details.ideal_max})`;
+      })
+      .join('\n');
+
+    const prompt = `Ikaw ay isang eksperto sa agrikultura na nagbibigay ng rekomendasyon para sa pagtatanim ng ${crop}.
+
+MGA KULANG NA PARAMETER:
+${deficiencyDetails}
+
+MGA KINAKAILANGAN SA FORMAT:
+- Gumamit ng malinaw at simpleng wika na maintindihan ng mga magsasaka
+- Ayusin ang mga rekomendasyon ayon sa kategorya
+- Gumamit ng bullet points na nagsisimula sa •
+- Panatilihing maikli ngunit kumpleto ang bawat rekomendasyon
+- Magsama ng mga tukoy na aksyon at sukat kung naaangkop
+- Tumuon sa praktikal at maipapatupad na payo
+
+ISTRAKTURA NG REKOMENDASYON:
+1. Magsimula sa pangkalahatang pagsusuri
+2. Magbigay ng tukoy na rekomendasyon para sa bawat kulang na parameter
+3. Magsama ng mga teknik sa pamamahala ng lupa
+4. Magmungkahi ng mga pagsasaayos sa kapaligiran
+5. Magbigay ng mga rekomendasyon sa pataba kasama ang dami
+6. Magsama ng anumang karagdagang pinakamahusay na kasanayan
+
+Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
+
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    console.log(`🤖 Sending to Gemini...`);
+
+    // Create Gemini model
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+    });
+
+    // Generate streaming response
+    const result = await model.generateContentStream(prompt);
+
+    let fullResponse = '';
+    let chunkCount = 0;
+
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        fullResponse += text;
+        chunkCount++;
+        
+        // Send chunk to client
+        res.write(`data: ${JSON.stringify({ 
+          chunk: text, 
+          done: false 
+        })}\n\n`);
+        
+        if (chunkCount % 10 === 0) {
+          console.log(`📦 Sent ${chunkCount} chunks...`);
+        }
+      }
+    }
+
+    console.log(`✅ Completed streaming ${chunkCount} chunks`);
+
+    // Send final message
+    res.write(`data: ${JSON.stringify({ 
+      chunk: '', 
+      done: true,
+      fullResponse: fullResponse 
+    })}\n\n`);
+
+    res.end();
+
+  } catch (error) {
+    console.error(`❌ Error generating suggestions:`, error);
+    
+    try {
+      res.write(`data: ${JSON.stringify({ 
+        error: true, 
+        message: 'May problema sa pagbuo ng mga rekomendasyon. Pakisubukan muli.',
+        errorDetails: error.message 
+      })}\n\n`);
+      res.end();
+    } catch (writeError) {
+      console.error('❌ Could not write error response:', writeError);
+    }
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+// System prompt - Tagalog only
+const SYSTEM_PROMPT = `Ikaw ay AgriBot, isang dalubhasa sa agrikultura na nag-aalok ng tulong sa:
+- Pagpili at pagpaplano ng pananim
+- Kalusugan at pagsusuri ng lupa
+- Pamamahala sa peste at sakit ng halaman
+- Sistema ng tubig at irigasyon
+- Pataba at pamamahala ng sustansya
+- Gabay sa pagtatanim ayon sa panahon
+- Pagsasaayos sa klima at panahon
+- Mga teknik sa pag-ani at imbakan
+- Organiko at sustainable na pagsasaka
+- Pamamahala ng hayop (baka, manok, kambing, tupa, baboy)
+- Nutrisyon at pagpapakain ng hayop
+- Kalusugan at kontrol ng sakit ng hayop
+- Sistema ng pangisdaan at aquaculture
+- Mga teknik sa fish farming
+- Pamamahala ng pond at kalidad ng tubig
+- Kalusugan at sakit ng isda
+
+Magbigay ng praktikal at kapaki-pakinabang na payo na akma sa pangangailangan ng user. Magtanong tungkol sa kanilang rehiyon, uri ng lupa, kasalukuyang kondisyon, at setup ng hayop/pangisdaan kung kinakailangan. Panatilihing maikli ngunit makahulugan ang mga sagot.
+
+MAHALAGA: Pagkatapos ng iyong sagot, magdagdag ng 3-4 nauugnay na tanong na maaaring itanong ng user. I-format ito sa dulo tulad nito:
+
+[FOLLOW_UP_QUESTIONS]
+- Tanong 1?
+- Tanong 2?
+- Tanong 3?
+- Tanong 4?
+[/FOLLOW_UP_QUESTIONS]
+
+Gawing praktikal, maikli, at direktang nauugnay sa iyong sagot ang mga tanong.`;
+
+// Store chat sessions per user (in production, use Redis or database)
+const chatSessions = new Map();
+
+// Test endpoint to verify Gemini works
+router.get('/chatbot/test', async (req, res) => {
+  try {
+    console.log('🧪 Testing Gemini API...');
+    
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+    });
+    
+    const result = await model.generateContent('Say "Hello from Gemini!"');
+    const response = await result.response;
+    const text = response.text();
+    
+    console.log('✅ Gemini test successful:', text);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Gemini is working!',
+      response: text
+    });
+  } catch (error) {
+    console.error('❌ Gemini test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Gemini test failed',
+      error: error.message
+    });
+  }
+});
+
+// Initialize chat session for user
+router.post('/chatbot/init', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.firebaseUid ;
+    console.log(`📱 Initializing chat for user: ${userId}`);
+    
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction: SYSTEM_PROMPT,
+    });
+    
+    const chatSession = model.startChat();
+    chatSessions.set(userId, chatSession);
+    
+    console.log(`✅ Chat initialized for user: ${userId}`);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Chat session initialized',
+      welcomeMessage: 'Kumusta! Ako si AgriBot, ang iyong tulong sa agrikultura. Paano kita matutulungan ngayong araw?',
+      suggestions: [
+        'Sabihin mo ang tungkol sa kalusugan ng lupa',
+        'Anong pananim ang dapat kong itanim?',
+        'Paano ko kontrolin ang peste?',
+        'Ano ang pinakamahusay na irigasyon?'
+      ]
+    });
+  } catch (error) {
+    console.error('❌ Error initializing chat:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Hindi ma-initialize ang chat session',
+      error: error.message
+    });
+  }
+});
+
+// Send message to chatbot (streaming)
+router.post('/chatbot/message', authenticate, async (req, res) => {
+  const userId = req.user.firebaseUid ;
+  
+  try {
+    const { message } = req.body;
+    
+    console.log(`💬 Message from user ${userId}:`, message);
+
+    if (!message || message.trim() === '') {
+      console.log('⚠️ Empty message received');
+      return res.status(400).json({
+        success: false,
+        message: 'Kailangan ng mensahe'
+      });
+    }
+
+    // Get or create chat session
+    let chatSession = chatSessions.get(userId);
+    if (!chatSession) {
+      console.log(`🔄 Creating new session for user: ${userId}`);
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.0-flash',
+        systemInstruction: SYSTEM_PROMPT,
+      });
+      chatSession = model.startChat();
+      chatSessions.set(userId, chatSession);
+    }
+
+    // Set headers for SSE (Server-Sent Events)
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for Nginx
+
+    console.log(`🤖 Sending to Gemini...`);
+
+    // Send message and stream response
+    const result = await chatSession.sendMessageStream(message);
+
+    let fullResponse = '';
+    let chunkCount = 0;
+
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        fullResponse += text;
+        chunkCount++;
+        
+        // Send chunk to client
+        res.write(`data: ${JSON.stringify({ chunk: text, done: false })}\n\n`);
+        
+        // Log every 10 chunks
+        if (chunkCount % 10 === 0) {
+          console.log(`📦 Sent ${chunkCount} chunks...`);
+        }
+      }
+    }
+
+    console.log(`✅ Completed streaming ${chunkCount} chunks`);
+
+    // Extract suggestions from full response
+    const extracted = extractSuggestionsFromResponse(fullResponse);
+
+    // Send final message with suggestions
+    res.write(`data: ${JSON.stringify({ 
+      chunk: '', 
+      done: true, 
+      fullResponse: extracted.response,
+      suggestions: extracted.suggestions 
+    })}\n\n`);
+
+    res.end();
+
+  } catch (error) {
+    console.error(`❌ Error for user ${userId}:`, error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    
+    // Send error through SSE
+    try {
+      res.write(`data: ${JSON.stringify({ 
+        error: true, 
+        message: 'Paumanhin, may problema sa pagkonekta sa AI service. Pakisubukan muli sandali.',
+        errorDetails: error.message 
+      })}\n\n`);
+      res.end();
+    } catch (writeError) {
+      console.error('❌ Could not write error response:', writeError);
+    }
+  }
+});
+
+// Clear chat history
+router.post('/chatbot/clear', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.firebaseUid ;
+    console.log(`🗑️ Clearing chat for user: ${userId}`);
+    
+    // Create new session
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction: SYSTEM_PROMPT,
+    });
+    
+    const chatSession = model.startChat();
+    chatSessions.set(userId, chatSession);
+    
+    console.log(`✅ Chat cleared for user: ${userId}`);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Na-clear na ang chat history',
+      welcomeMessage: 'Kumusta! Ako si AgriBot, ang iyong tulong sa agrikultura. Paano kita matutulungan ngayong araw?',
+      suggestions: [
+        'Sabihin mo ang tungkol sa kalusugan ng lupa',
+        'Anong pananim ang dapat kong itanim?',
+        'Paano ko kontrolin ang peste?',
+        'Ano ang pinakamahusay na irigasyon?'
+      ]
+    });
+  } catch (error) {
+    console.error('❌ Error clearing chat:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Hindi ma-clear ang chat',
+      error: error.message
+    });
+  }
+});
+
+// Helper function to extract suggestions
+function extractSuggestionsFromResponse(fullResponse) {
+  const startMarker = '[FOLLOW_UP_QUESTIONS]';
+  const endMarker = '[/FOLLOW_UP_QUESTIONS]';
+
+  if (fullResponse.includes(startMarker) && fullResponse.includes(endMarker)) {
+    const startIndex = fullResponse.indexOf(startMarker);
+    const endIndex = fullResponse.indexOf(endMarker);
+
+    const cleanResponse = fullResponse.substring(0, startIndex).trim();
+    const suggestionsSection = fullResponse
+      .substring(startIndex + startMarker.length, endIndex)
+      .trim();
+
+    const suggestions = suggestionsSection
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .map(line => line.replace(/^[-*•]\s*|^\d+\.\s*/, '').trim())
+      .filter(line => line.length > 5)
+      .slice(0, 4);
+
+    return {
+      response: cleanResponse,
+      suggestions: suggestions.length > 0 ? suggestions : getFallbackSuggestions()
+    };
+  }
+
+  return {
+    response: fullResponse,
+    suggestions: getFallbackSuggestions()
+  };
+}
+
+function getFallbackSuggestions() {
+  return [
+    'Maaari mo bang ipaliwanag pa?',
+    'Ano ang mga benepisyo?',
+    'May iba pa bang paraan?',
+    'Paano ako magsisimula?'
+  ];
+}
+
+
+
+
+
+
+router.get('/test-gemini', async (req, res) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    const result = await model.generateContent("Say hello! This is a test.");
+    const text = result.response.text();
+
+    res.status(200).json({
+      success: true,
+      message: "Gemini Flash 2.5 endpoint works!",
+      response: text
+    });
+
+  } catch (error) {
+    console.error("Gemini Test Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error calling Gemini API",
+      error: error.toString()
+    });
+  }
+});
 
  
 
