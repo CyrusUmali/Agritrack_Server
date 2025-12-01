@@ -5,6 +5,8 @@ const authenticate = require('../middleware/firebase-auth-middleware');
 const admin = require('firebase-admin');
 const pool = require('../connect');
 
+const { sendTestEmail } = require('../gmailService'); // update path as needed
+
  
   
 
@@ -354,7 +356,7 @@ router.post('/farmers', authenticate, async (req, res) => {
 
 
 
-
+ 
 // GET a specific farmer by ID
 router.get('/farmers/:id', authenticate, async (req, res) => {
   try {
@@ -449,6 +451,7 @@ router.get('/farmers/:id', authenticate, async (req, res) => {
     });
   }
 });
+
 
 
 // PUT update farmer
@@ -551,9 +554,13 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       }
     }
 
-    // Check if farmer exists and get user_id
+    // Check if farmer exists and get user_id with current status
     const [farmerCheck] = await pool.query(
-      'SELECT id, user_id FROM farmers WHERE id = ?',
+      `SELECT f.id, f.user_id, f.name, f.email, f.status as farmer_status, 
+              u.status as user_status 
+       FROM farmers f 
+       LEFT JOIN users u ON f.user_id = u.id 
+       WHERE f.id = ?`,
       [farmerId]
     );
 
@@ -568,11 +575,14 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       });
     }
 
-    const userId = farmerCheck[0].user_id;
+    const farmer = farmerCheck[0];
+    const userId = farmer.user_id;
+    const previousUserStatus = farmer.user_status;
+    const previousFarmerStatus = farmer.farmer_status;
 
     // Check if email is being used by another farmer
     const [emailCheck] = await pool.query(
-      'SELECT id FROM farmers WHERE email = ? AND id != ?',
+      'SELECT id, name FROM farmers WHERE email = ? AND id != ?',
       [email, farmerId]
     );
 
@@ -657,11 +667,151 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
     );
 
     // Update user status if accountStatus is provided and user exists
+    let statusChanged = false;
     if (accountStatus && userId) {
+      // Check if status is actually changing
+      if (accountStatus !== previousUserStatus) {
+        statusChanged = true;
+      }
+      
       await pool.query(
         'UPDATE users SET status = ? WHERE id = ?',
         [accountStatus, userId]
       );
+    }
+
+    // Send status update email if status changed
+    if (statusChanged && email && accountStatus) {
+      try {
+        const subject = 'Account Status Update';
+        
+        const statusMessages = {
+          'Active': 'Your account has been activated. You can now log in and access all features.',
+          'Inactive': 'Your account has been deactivated. Please contact support for more information.',
+          'Suspended': 'Your account has been suspended. Please contact support for assistance.',
+          'Pending': 'Your account is pending review. You will be notified once it is approved.',
+          'Rejected': 'Your account application has been rejected. Please contact support for more information.'
+        };
+
+        const statusMessage = statusMessages[accountStatus] || 
+          `Your account status has been updated to: ${accountStatus}.`;
+        
+        const previousStatusText = previousUserStatus ? 
+          `Previous status: ${previousUserStatus.charAt(0).toUpperCase() + previousUserStatus.slice(1)}` : 
+          'No previous status';
+        
+        const message = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Account Status Update</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              line-height: 1.6;
+              color: #333;
+              max-width: 600px;
+              margin: 0 auto;
+              padding: 20px;
+            }
+            .header {
+              color: #2c3e50;
+              border-bottom: 2px solid #f2f2f2;
+              padding-bottom: 10px;
+            }
+            .status-badge {
+              display: inline-block;
+              padding: 8px 16px;
+              border-radius: 4px;
+              font-weight: bold;
+              margin: 10px 0;
+            }
+            .status-active {
+              background-color: #d4edda;
+              color: #155724;
+              border: 1px solid #c3e6cb;
+            }
+            .status-inactive {
+              background-color: #f8d7da;
+              color: #721c24;
+              border: 1px solid #f5c6cb;
+            }
+            .status-pending {
+              background-color: #fff3cd;
+              color: #856404;
+              border: 1px solid #ffeaa7;
+            }
+            .status-suspended {
+              background-color: #d6d8d9;
+              color: #383d41;
+              border: 1px solid #c6c8ca;
+            }
+            .status-rejected {
+              background-color: #f8d7da;
+              color: #721c24;
+              border: 1px solid #f5c6cb;
+            }
+            .info-box {
+              background-color: #f9f9f9;
+              border-left: 4px solid #3498db;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .footer {
+              margin-top: 20px;
+              padding-top: 10px;
+              border-top: 2px solid #f2f2f2;
+              font-size: 12px;
+              color: #7f8c8d;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Account Status Update</h1>
+          </div>
+          <p>Hello ${firstname || farmer.name || 'User'},</p>
+          
+          <div class="info-box">
+            <p><strong>Account Update Notification</strong></p>
+            <p>Your account status has been updated.</p>
+          
+          </div>
+          
+          <p><strong>New Account Status:</strong></p>
+          <div class="status-badge status-${accountStatus}">
+            ${accountStatus.charAt(0).toUpperCase() + accountStatus.slice(1)}
+          </div>
+          
+          <p>${statusMessage}</p>
+          
+          <div class="info-box">
+            <p><strong>Account Details:</strong></p>
+            <p>Name: ${name}</p>
+            <p>Email: ${email}</p>
+            <p>Update Date: ${new Date().toLocaleDateString()}</p>
+          </div>
+          
+          <p>If you have any questions or believe this is a mistake, please contact our support team.</p>
+          
+          <div class="footer">
+            <p>This is an automated message. Please do not reply to this email.</p>
+            <p>© ${new Date().getFullYear()} Your Company Name. All rights reserved.</p>
+          </div>
+        </body>
+        </html>
+        `;
+
+        await sendTestEmail(email, subject, message);
+        
+        console.log(`Status update email sent to ${email} (Status: ${previousUserStatus} → ${accountStatus})`);
+        
+      } catch (emailError) {
+        console.error('Failed to send status update email:', emailError);
+        // Don't fail the entire update if email fails
+        // Log the error but continue with the response
+      }
     }
 
     // Get the updated farmer with sector, association, and user info
@@ -681,48 +831,59 @@ router.put('/farmers/:id', authenticate, async (req, res) => {
       [farmerId]
     );
 
-    const farmer = updatedFarmer[0];
+    const updatedFarmerData = updatedFarmer[0];
 
     // Format the response
     res.json({
       success: true,
+      message: statusChanged ? 
+        `Farmer updated successfully. Status change email ${email ? 'sent' : 'failed to send'} to ${email}.` : 
+        'Farmer updated successfully.',
       farmer: {
-        id: farmer.id,
-        firstname: farmer.firstname,
-        middlename: farmer.middlename || null,
-        surname: farmer.surname || null,
-        sex: farmer.sex || null,
-        extension: farmer.extension || null,
-        name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
-        email: farmer.email,
-        phone: farmer.phone,
-        address: farmer.address,
-        sector: farmer.sector,
-        sectorId: farmer.sectorId ? String(farmer.sectorId) : null,
-        imageUrl: farmer.imageUrl,
-        barangay: farmer.barangay || null,
-        contact: farmer.phone,
-        farmName: farmer.farm_name,
-        hectare: parseFloat(farmer.total_land_area) || 0,
-        created_at: farmer.created_at,
-        updated_at: farmer.updated_at,
-        house_hold_head: farmer.house_hold_head,
-        civil_status: farmer.civil_status || null,
-        spouse_name: farmer.spouse_name || null,
-        religion: farmer.religion || null,
-        household_num: farmer.household_num || null,
-        male_members_num: farmer.male_members_num || null,
-        female_members_num: farmer.female_members_num || null,
-        mother_maiden_name: farmer.mother_maiden_name || null,
-        person_to_notify: farmer.person_to_notify || null,
-        ptn_contact: farmer.ptn_contact || null,
-        ptn_relationship: farmer.ptn_relationship || null,
-        status: farmer.status || null,
-        birthday: farmer.birthday ? farmer.birthday.toISOString().split('T')[0] : null, // Format as YYYY-MM-DD
-        association: farmer.association_id ? 
-          `${farmer.association_id}: ${farmer.association_name}` : null,
-        associationId: farmer.association_id || null,
-        user_status: farmer.user_status || null
+        id: updatedFarmerData.id,
+        firstname: updatedFarmerData.firstname,
+        middlename: updatedFarmerData.middlename || null,
+        surname: updatedFarmerData.surname || null,
+        sex: updatedFarmerData.sex || null,
+        extension: updatedFarmerData.extension || null,
+        name: `${updatedFarmerData.firstname}${updatedFarmerData.middlename ? ' ' + updatedFarmerData.middlename : ''}${updatedFarmerData.surname ? ' ' + updatedFarmerData.surname : ''}${updatedFarmerData.extension ? ' ' + updatedFarmerData.extension : ''}`,
+        email: updatedFarmerData.email,
+        phone: updatedFarmerData.phone,
+        address: updatedFarmerData.address,
+        sector: updatedFarmerData.sector,
+        sectorId: updatedFarmerData.sectorId ? String(updatedFarmerData.sectorId) : null,
+        imageUrl: updatedFarmerData.imageUrl,
+        barangay: updatedFarmerData.barangay || null,
+        contact: updatedFarmerData.phone,
+        farmName: updatedFarmerData.farm_name,
+        hectare: parseFloat(updatedFarmerData.total_land_area) || 0,
+        created_at: updatedFarmerData.created_at,
+        updated_at: updatedFarmerData.updated_at,
+        house_hold_head: updatedFarmerData.house_hold_head,
+        civil_status: updatedFarmerData.civil_status || null,
+        spouse_name: updatedFarmerData.spouse_name || null,
+        religion: updatedFarmerData.religion || null,
+        household_num: updatedFarmerData.household_num || null,
+        male_members_num: updatedFarmerData.male_members_num || null,
+        female_members_num: updatedFarmerData.female_members_num || null,
+        mother_maiden_name: updatedFarmerData.mother_maiden_name || null,
+        person_to_notify: updatedFarmerData.person_to_notify || null,
+        ptn_contact: updatedFarmerData.ptn_contact || null,
+        ptn_relationship: updatedFarmerData.ptn_relationship || null,
+        status: updatedFarmerData.status || null,
+        birthday: updatedFarmerData.birthday ? updatedFarmerData.birthday.toISOString().split('T')[0] : null, // Format as YYYY-MM-DD
+        association: updatedFarmerData.association_id ? 
+          `${updatedFarmerData.association_id}: ${updatedFarmerData.association_name}` : null,
+        associationId: updatedFarmerData.association_id || null,
+        user_status: updatedFarmerData.user_status || null
+      },
+      statusChange: statusChanged ? {
+        changed: true,
+        previous: previousUserStatus,
+        current: accountStatus,
+        emailSent: !!email
+      } : {
+        changed: false
       }
     });
 
