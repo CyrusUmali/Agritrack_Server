@@ -519,7 +519,7 @@ router.post('/farms/', authenticate, async (req, res) => {
       name,
       JSON.stringify(formattedVertices),
       barangay || 'San Diego',
-      sectorId || 5,
+      sectorId || 3,
       farmerId || null,
       JSON.stringify(products || ["Rice"]),
       area,
