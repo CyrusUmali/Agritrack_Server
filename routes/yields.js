@@ -646,7 +646,7 @@ router.get('/yields/farm/:farmId',authenticate ,  async (req, res) => {
         LEFT JOIN sectors s ON p.sector_id = s.sector_id 
         LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
         WHERE fy.farm_id = ? AND fy.status = 'Accepted'
-        ORDER BY fy.harvest_date DESC
+        ORDER BY fy.created_at DESC 
       `, [farmId]);
 
         res.json({
@@ -1149,7 +1149,7 @@ router.get('/farmer-yield-distribution',authenticate , async (req, res) => {
 
 
 
-router.get('/yields/:farmId', authenticate ,  async (req, res) => {
+router.get('/yields/:farmId',    async (req, res) => {
     try {
         const { farmId } = req.params;
 
@@ -1196,7 +1196,7 @@ router.get('/yields/:farmId', authenticate ,  async (req, res) => {
         LEFT JOIN sectors s ON p.sector_id = s.sector_id 
         LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
         WHERE fy.farm_id = ?
-        ORDER BY fy.harvest_date DESC
+        ORDER BY fy.created_at DESC
       `, [farmId]);
 
         res.json({
@@ -1278,8 +1278,7 @@ router.get('/farmer-yields/:farmerId?',authenticate ,  async (req, res) => {
         if (farmerId) {
             query += ` WHERE fy.farmer_id = ? `;
         }
-         
-  
+          
         // Changed from harvest_date to created_at for sorting
         query += ` ORDER BY fy.created_at DESC`;
         // Execute query with or without farmerId parameter
