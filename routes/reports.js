@@ -565,10 +565,7 @@ router.get('/barangay-yields-report' , authenticate ,  async (req, res) => {
 
 
 
-
-
-
-router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
+router.get('/farmer-yields-report', async (req, res) => {
   try {
     // Extract and clean the IDs
     const farmerId = req.query.farmerId ? req.query.farmerId.split(':')[0].trim() : null;
@@ -586,11 +583,23 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
     // Validate date range
     const dateRangeValid = startDate && endDate && startDate !== endDate;
 
+    // DEBUG: Log the incoming parameters
+    console.log('Query Parameters:', {
+      farmerId,
+      barangayName,
+      productId,
+      associationId,
+      startDate,
+      endDate,
+      viewBy,
+      countParam
+    });
+
     // Base query with optional filters
     let query = `
         SELECT 
           fy.id,
-          farm.farmer_id,
+          fy.farmer_id,  -- CHANGED: Use fy.farmer_id instead of farm.farmer_id
           CONCAT(f.firstname, 
                  IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
                  IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
@@ -609,9 +618,9 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
           MONTH(fy.harvest_date) as harvest_month,
           farm.farm_id
         FROM farmer_yield fy
-        JOIN farms farm ON fy.farm_id = farm.farm_id
-        JOIN farmers f ON farm.farmer_id = f.id
-        JOIN barangay b ON farm.parentBarangay = b.name
+        JOIN farmers f ON fy.farmer_id = f.id  -- CHANGED: Direct join with farmers
+        LEFT JOIN farms farm ON fy.farm_id = farm.farm_id  -- CHANGED: Made this LEFT JOIN
+        LEFT JOIN barangay b ON farm.parentBarangay = b.name  -- CHANGED: May need adjustment
         LEFT JOIN farm_products p ON fy.product_id = p.id
         LEFT JOIN associations a ON f.assoc_id = a.id
       `;
@@ -621,8 +630,9 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
 
     conditions.push('fy.status IS NOT NULL AND fy.status = "Accepted"');
 
+    // FIX: Check if farmerId filter should be on fy.farmer_id
     if (farmerId && farmerId !== 'all') {
-      conditions.push('farm.farmer_id = ?');
+      conditions.push('fy.farmer_id = ?');  // CHANGED: Filter on fy.farmer_id
       params.push(farmerId);
     }
 
@@ -646,16 +656,23 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
       params.push(startDate, endDate);
     }
 
+    // DEBUG: Log the query and conditions
+    console.log('Conditions:', conditions);
+    console.log('Params:', params);
+
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');
     }
 
-    // Handle viewBy options
+    // DEBUG: Log the base query
+    console.log('Base Query:', query);
+
+    // Handle viewBy options - UPDATED to use fy.farmer_id
     if (viewBy === 'Monthly') {
       query = `
           SELECT 
             NULL as id,
-            farm.farmer_id,
+            fy.farmer_id,  -- CHANGED
             CONCAT(f.firstname, 
                    IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
                    IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
@@ -675,20 +692,20 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
             DATE_FORMAT(fy.harvest_date, '%M') as month_name,
             LAST_DAY(fy.harvest_date) as period_date
           FROM farmer_yield fy
-          JOIN farms farm ON fy.farm_id = farm.farm_id
-          JOIN farmers f ON farm.farmer_id = f.id
-          JOIN barangay b ON farm.parentBarangay = b.name
+          JOIN farmers f ON fy.farmer_id = f.id  -- CHANGED
+          LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+          LEFT JOIN barangay b ON farm.parentBarangay = b.name
           LEFT JOIN farm_products p ON fy.product_id = p.id
           LEFT JOIN associations a ON f.assoc_id = a.id
           ${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}
-          GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), farm.farmer_id, fy.product_id, a.id
+          GROUP BY YEAR(fy.harvest_date), MONTH(fy.harvest_date), fy.farmer_id, fy.product_id, a.id
           ORDER BY month_year DESC, farmer_name, product_name, association_name
         `;
     } else if (viewBy === 'Yearly') {
       query = `
           SELECT 
             NULL as id,
-            farm.farmer_id,
+            fy.farmer_id,  -- CHANGED
             CONCAT(f.firstname, 
                    IF(f.middlename IS NULL, '', CONCAT(' ', f.middlename)), 
                    IF(f.surname IS NULL, '', CONCAT(' ', f.surname)),
@@ -707,13 +724,13 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
             YEAR(fy.harvest_date) as year,
             MAX(fy.harvest_date) as period_date
           FROM farmer_yield fy
-          JOIN farms farm ON fy.farm_id = farm.farm_id
-          JOIN farmers f ON farm.farmer_id = f.id
-          JOIN barangay b ON farm.parentBarangay = b.name
+          JOIN farmers f ON fy.farmer_id = f.id  -- CHANGED
+          LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
+          LEFT JOIN barangay b ON farm.parentBarangay = b.name
           LEFT JOIN farm_products p ON fy.product_id = p.id
           LEFT JOIN associations a ON f.assoc_id = a.id
           ${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}
-          GROUP BY YEAR(fy.harvest_date), farm.farmer_id, fy.product_id, a.id
+          GROUP BY YEAR(fy.harvest_date), fy.farmer_id, fy.product_id, a.id
           ORDER BY year DESC, farmer_name, product_name, association_name
         `;
     } else {
@@ -726,12 +743,18 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
       params.push(limitCount);
     }
 
+    // DEBUG: Log final query
+    console.log('Final Query:', query);
+    console.log('Final Params:', params);
+
     const [yields] = await pool.query(query, params);
+
+    // DEBUG: Log raw results
+    console.log('Raw SQL Results:', yields.length, 'records found');
 
     // Format response
     const formattedYields = yields.map(yield => {
-      const baseData = {
-        farmer_id: yield.farmer_id,
+      const baseData = { 
         farmer_name: yield.farmer_name,
         barangay: yield.barangay_name,
         product: yield.product_name,
@@ -766,11 +789,11 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
       } else {
         return {
           ...baseData,
-          harvest_date: new Date(yield.harvest_date).toLocaleDateString('en-US', {
+          harvest_date: yield.harvest_date ? new Date(yield.harvest_date).toLocaleDateString('en-US', {
             year: 'numeric',
             month: 'long',
             day: 'numeric'
-          }),
+          }) : null,
         };
       }
     });
@@ -804,9 +827,6 @@ router.get('/farmer-yields-report', authenticate ,  async (req, res) => {
     });
   }
 });
-
-
-
 
 
 
