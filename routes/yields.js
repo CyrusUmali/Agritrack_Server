@@ -645,8 +645,7 @@ router.get('/yields/farm/:farmId',authenticate ,  async (req, res) => {
         LEFT JOIN farm_products p ON fy.product_id = p.id
         LEFT JOIN sectors s ON p.sector_id = s.sector_id 
         LEFT JOIN farms farm ON fy.farm_id = farm.farm_id
-        WHERE fy.farm_id = ? AND fy.status = 'Accepted'
-        ORDER BY fy.created_at DESC 
+        WHERE fy.farm_id = ? ORDER BY fy.created_at DESC 
       `, [farmId]);
 
         res.json({
