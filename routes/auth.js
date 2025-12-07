@@ -10,12 +10,14 @@ const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
+
 // Check if API key exists
 if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY is not set in environment variables');
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
 
 
@@ -25,10 +27,7 @@ router.post('/weather/reporter-summary', async (req, res) => {
     const { weatherData, forecastData, airQualityData, location } = req.body;
  
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-    });
-
+ 
     // Create a personalized prompt for the weather reporter
     const prompt = `You are a personal weather assistant speaking directly to me. Based on the following weather data, create a natural, conversational weather report (2-3 sentences max) as if you're speaking specifically to me. Be friendly, informative, and mention the most important conditions that I should know about.
 
@@ -81,9 +80,7 @@ router.get('/chatbot/test', async (req, res) => {
   try {
     console.log('🧪 Testing Gemini API...');
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-    });
+ 
 
     const result = await model.generateContent('Say "Hello from Gemini!"');
     const response = await result.response;
@@ -179,11 +176,7 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
 
     console.log(`🤖 Sending to Gemini...`);
 
-    // Create Gemini model
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-    });
-
+  
     // Generate streaming response
     const result = await model.generateContentStream(prompt);
 
@@ -277,10 +270,7 @@ const chatSessions = new Map();
 router.get('/chatbot/test', async (req, res) => {
   try {
     console.log('🧪 Testing Gemini API...');
-
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-    });
+ 
 
     const result = await model.generateContent('Say "Hello from Gemini!"');
     const response = await result.response;
@@ -309,10 +299,7 @@ router.post('/chatbot/init', authenticate, async (req, res) => {
     const userId = req.user.firebaseUid;
     console.log(`📱 Initializing chat for user: ${userId}`);
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: SYSTEM_PROMPT,
-    });
+  
 
     const chatSession = model.startChat();
     chatSessions.set(userId, chatSession);
@@ -362,7 +349,7 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
     if (!chatSession) {
       console.log(`🔄 Creating new session for user: ${userId}`);
       const model = genAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash-lite',
         systemInstruction: SYSTEM_PROMPT,
       });
       chatSession = model.startChat();
@@ -444,7 +431,7 @@ router.post('/chatbot/clear', authenticate, async (req, res) => {
 
     // Create new session
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash-lite',
       systemInstruction: SYSTEM_PROMPT,
     });
 
@@ -521,29 +508,56 @@ function getFallbackSuggestions() {
 
 
 
-
 router.get('/test-gemini', async (req, res) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    
 
     const result = await model.generateContent("Say hello! This is a test.");
-    const text = result.response.text();
+    const text = result?.response?.text?.() || "(No text returned)";
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Gemini Flash 2.5 endpoint works!",
+      message: "Gemini Flash 2.0 endpoint works!",
       response: text
     });
 
   } catch (error) {
     console.error("Gemini Test Error:", error);
-    res.status(500).json({
+
+    // Attempt to extract structured API error JSON if available
+    let extracted = {};
+    try {
+      // Sometimes GoogleError includes JSON inside the message string
+      const jsonMatch = error.message?.match(/\{[\s\S]*\}$/);
+      if (jsonMatch) extracted = JSON.parse(jsonMatch[0]);
+    } catch (_) {}
+
+    // Detect quota/rate limits
+    const is429 =
+      error.status === 429 ||
+      error.message?.includes("429") ||
+      extracted?.error?.code === 429;
+
+    const quotaInfo =
+      extracted?.error?.details ||
+      extracted?.details ||
+      null;
+
+    return res.status(is429 ? 429 : 500).json({
       success: false,
       message: "Error calling Gemini API",
-      error: error.toString()
+      error: {
+        type: error.name,
+        message: error.message,
+        status: error.status || null,
+        quota: quotaInfo,
+        stack: process.env.NODE_ENV === "development" ? error.stack : undefined
+      }
     });
   }
 });
+
+
 
 
 
