@@ -3,19 +3,109 @@ const express = require('express');
 const router = express.Router();
 const authenticate = require('../middleware/firebase-auth-middleware');
 const admin = require('firebase-admin');
-const pool = require('../connect'); 
+const pool = require('../connect');
 const axios = require('axios');
 
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
- 
- // Check if API key exists
+
+// Check if API key exists
 if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY is not set in environment variables');
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+
+
+// authRoutes.js
+router.post('/weather/reporter-summary', async (req, res) => {
+  try {
+    const { weatherData, forecastData, airQualityData, location } = req.body;
+ 
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+    });
+
+    // Create a personalized prompt for the weather reporter
+    const prompt = `You are a personal weather assistant speaking directly to me. Based on the following weather data, create a natural, conversational weather report (2-3 sentences max) as if you're speaking specifically to me. Be friendly, informative, and mention the most important conditions that I should know about.
+
+Current Weather:
+- Temperature: ${weatherData.temperature}°C (feels like ${weatherData.feelsLike}°C)
+- Condition: ${weatherData.description}
+- Humidity: ${weatherData.humidity}%
+- Wind Speed: ${weatherData.windSpeed} m/s
+- Visibility: ${weatherData.visibility / 1000} km
+- Clouds: ${weatherData.clouds}%
+${weatherData.rain1h ? `- Rainfall: ${weatherData.rain1h} mm in last hour` : ''}
+
+${airQualityData ? `Air Quality: ${airQualityData.quality} (AQI ${airQualityData.aqi})` : ''}
+
+${forecastData && forecastData.length > 0 ? `
+Today's Forecast:
+- High: ${forecastData[0].tempMax}°C, Low: ${forecastData[0].tempMin}°C
+- Condition: ${forecastData[0].description}
+
+Tomorrow:
+- High: ${forecastData[1]?.tempMax}°C, Low: ${forecastData[1]?.tempMin}°C
+- Condition: ${forecastData[1]?.description}
+` : ''}
+
+Create a brief, personal weather report just for me. Use "you/your" pronouns and speak directly to me. Don't use bullet points. Give me advice based on the conditions (like if I should bring an umbrella, wear a jacket, etc.).`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const summary = response.text();
+ 
+
+    res.status(200).json({
+      success: true,
+      summary: summary.trim(),
+      message: 'Personal weather summary generated successfully'
+    });
+  } catch (error) {
+    console.error('❌ Failed to generate personal weather summary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate personal weather summary',
+      error: error.message
+    });
+  }
+});
+
+
+// Test endpoint to verify Gemini works
+router.get('/chatbot/test', async (req, res) => {
+  try {
+    console.log('🧪 Testing Gemini API...');
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+    });
+
+    const result = await model.generateContent('Say "Hello from Gemini!"');
+    const response = await result.response;
+    const text = response.text();
+
+    console.log('✅ Gemini test successful:', text);
+
+    res.status(200).json({
+      success: true,
+      message: 'Gemini is working!',
+      response: text
+    });
+  } catch (error) {
+    console.error('❌ Gemini test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Gemini test failed',
+      error: error.message
+    });
+  }
+});
+
 
 
 function generateOTP() {
@@ -105,13 +195,13 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
       if (text) {
         fullResponse += text;
         chunkCount++;
-        
+
         // Send chunk to client
-        res.write(`data: ${JSON.stringify({ 
-          chunk: text, 
-          done: false 
+        res.write(`data: ${JSON.stringify({
+          chunk: text,
+          done: false
         })}\n\n`);
-        
+
         if (chunkCount % 10 === 0) {
           console.log(`📦 Sent ${chunkCount} chunks...`);
         }
@@ -121,22 +211,22 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
     console.log(`✅ Completed streaming ${chunkCount} chunks`);
 
     // Send final message
-    res.write(`data: ${JSON.stringify({ 
-      chunk: '', 
+    res.write(`data: ${JSON.stringify({
+      chunk: '',
       done: true,
-      fullResponse: fullResponse 
+      fullResponse: fullResponse
     })}\n\n`);
 
     res.end();
 
   } catch (error) {
     console.error(`❌ Error generating suggestions:`, error);
-    
+
     try {
-      res.write(`data: ${JSON.stringify({ 
-        error: true, 
+      res.write(`data: ${JSON.stringify({
+        error: true,
         message: 'May problema sa pagbuo ng mga rekomendasyon. Pakisubukan muli.',
-        errorDetails: error.message 
+        errorDetails: error.message
       })}\n\n`);
       res.end();
     } catch (writeError) {
@@ -144,13 +234,6 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
     }
   }
 });
-
-
-
-
-
-
-
 
 
 
@@ -194,17 +277,17 @@ const chatSessions = new Map();
 router.get('/chatbot/test', async (req, res) => {
   try {
     console.log('🧪 Testing Gemini API...');
-    
+
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
     });
-    
+
     const result = await model.generateContent('Say "Hello from Gemini!"');
     const response = await result.response;
     const text = response.text();
-    
+
     console.log('✅ Gemini test successful:', text);
-    
+
     res.status(200).json({
       success: true,
       message: 'Gemini is working!',
@@ -223,19 +306,19 @@ router.get('/chatbot/test', async (req, res) => {
 // Initialize chat session for user
 router.post('/chatbot/init', authenticate, async (req, res) => {
   try {
-    const userId = req.user.firebaseUid ;
+    const userId = req.user.firebaseUid;
     console.log(`📱 Initializing chat for user: ${userId}`);
-    
+
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       systemInstruction: SYSTEM_PROMPT,
     });
-    
+
     const chatSession = model.startChat();
     chatSessions.set(userId, chatSession);
-    
+
     console.log(`✅ Chat initialized for user: ${userId}`);
-    
+
     res.status(200).json({
       success: true,
       message: 'Chat session initialized',
@@ -259,11 +342,11 @@ router.post('/chatbot/init', authenticate, async (req, res) => {
 
 // Send message to chatbot (streaming)
 router.post('/chatbot/message', authenticate, async (req, res) => {
-  const userId = req.user.firebaseUid ;
-  
+  const userId = req.user.firebaseUid;
+
   try {
     const { message } = req.body;
-    
+
     console.log(`💬 Message from user ${userId}:`, message);
 
     if (!message || message.trim() === '') {
@@ -305,10 +388,10 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
       if (text) {
         fullResponse += text;
         chunkCount++;
-        
+
         // Send chunk to client
         res.write(`data: ${JSON.stringify({ chunk: text, done: false })}\n\n`);
-        
+
         // Log every 10 chunks
         if (chunkCount % 10 === 0) {
           console.log(`📦 Sent ${chunkCount} chunks...`);
@@ -322,11 +405,11 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
     const extracted = extractSuggestionsFromResponse(fullResponse);
 
     // Send final message with suggestions
-    res.write(`data: ${JSON.stringify({ 
-      chunk: '', 
-      done: true, 
+    res.write(`data: ${JSON.stringify({
+      chunk: '',
+      done: true,
       fullResponse: extracted.response,
-      suggestions: extracted.suggestions 
+      suggestions: extracted.suggestions
     })}\n\n`);
 
     res.end();
@@ -338,13 +421,13 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
       stack: error.stack,
       name: error.name
     });
-    
+
     // Send error through SSE
     try {
-      res.write(`data: ${JSON.stringify({ 
-        error: true, 
+      res.write(`data: ${JSON.stringify({
+        error: true,
         message: 'Paumanhin, may problema sa pagkonekta sa AI service. Pakisubukan muli sandali.',
-        errorDetails: error.message 
+        errorDetails: error.message
       })}\n\n`);
       res.end();
     } catch (writeError) {
@@ -356,20 +439,20 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
 // Clear chat history
 router.post('/chatbot/clear', authenticate, async (req, res) => {
   try {
-    const userId = req.user.firebaseUid ;
+    const userId = req.user.firebaseUid;
     console.log(`🗑️ Clearing chat for user: ${userId}`);
-    
+
     // Create new session
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       systemInstruction: SYSTEM_PROMPT,
     });
-    
+
     const chatSession = model.startChat();
     chatSessions.set(userId, chatSession);
-    
+
     console.log(`✅ Chat cleared for user: ${userId}`);
-    
+
     res.status(200).json({
       success: true,
       message: 'Na-clear na ang chat history',
@@ -462,7 +545,7 @@ router.get('/test-gemini', async (req, res) => {
   }
 });
 
- 
+
 
 
 
@@ -471,7 +554,7 @@ router.get('/test-gemini', async (req, res) => {
 router.get('/notifications/farmer/:farmerId/unread-count', authenticate, async (req, res) => {
   try {
     const { farmerId } = req.params;
-    
+
     // Validate farmerId
     if (!farmerId || isNaN(farmerId)) {
       return res.status(400).json({
@@ -523,7 +606,7 @@ router.put('/notifications/:notificationId', authenticate, async (req, res) => {
   try {
     const { notificationId } = req.params;
     const { status = 'read' } = req.body; // Default to 'read' if not provided
-    
+
     // Validate status
     if (!['read', 'unread'].includes(status)) {
       return res.status(400).json({
@@ -556,7 +639,7 @@ router.put('/notifications/:notificationId', authenticate, async (req, res) => {
     // Update the notification status
     const updateFields = [];
     const updateValues = [];
-    
+
     if (status === 'read') {
       updateFields.push('status = ?', 'read_at = NOW()');
       updateValues.push('read');
@@ -564,7 +647,7 @@ router.put('/notifications/:notificationId', authenticate, async (req, res) => {
       updateFields.push('status = ?', 'read_at = NULL');
       updateValues.push('unread');
     }
-    
+
     updateValues.push(notificationId);
 
     const [result] = await pool.query(
@@ -610,7 +693,7 @@ router.put('/notifications/:notificationId', authenticate, async (req, res) => {
 router.get('/notifications/:farmerId', authenticate, async (req, res) => {
   try {
     const { farmerId } = req.params;
-    
+
     const [notifications] = await pool.query(`
       SELECT 
         n.*,
@@ -649,7 +732,7 @@ router.get('/notifications/:farmerId', authenticate, async (req, res) => {
 router.delete('/notifications/:notificationId', authenticate, async (req, res) => {
   try {
     const { notificationId } = req.params;
-    
+
     // First, verify the notification exists
     const [existingNotifications] = await pool.query(
       'SELECT * FROM notifications WHERE id = ?',
@@ -850,7 +933,7 @@ router.post('/announcements', async (req, res) => {
     if (recipient_type === 'everyone') {
       // Get all farmers
       const [allFarmers] = await pool.query('SELECT id FROM farmers WHERE status = "active"');
-      
+
       // Create notifications for each farmer (optional - depends on your notification system)
       for (const farmer of allFarmers) {
         await pool.query(
@@ -903,7 +986,7 @@ function _extractPreview(text) {
     return lines[1].length > 100 ? lines[1].substring(0, 100) + '...' : lines[1];
   }
   return text.length > 100 ? text.substring(0, 100) + '...' : text;
-}  
+}
 // POST /reply - Send a reply to an existing message
 router.post('/reply', authenticate, async (req, res) => {
   try {
@@ -938,7 +1021,7 @@ router.post('/reply', authenticate, async (req, res) => {
     }
 
     const original = originalMessage[0];
-    
+
     // Get current user's role
     const [currentUser] = await pool.query(
       `SELECT role FROM users WHERE id = ?`,
@@ -953,7 +1036,7 @@ router.post('/reply', authenticate, async (req, res) => {
     }
 
     const userRole = currentUser[0].role;
-    
+
     // Determine who should receive this reply and set sender_id accordingly
     let receiver_id = null;
     let final_sender_id = null;
@@ -961,11 +1044,11 @@ router.post('/reply', authenticate, async (req, res) => {
     // If user is a farmer, use their user_id as sender_id
     if (userRole === 'farmer') {
       final_sender_id = user_id;
-      
+
       // Farmer is replying to a message they received
       if (parseInt(user_id) === original.receiver_id) {
         receiver_id = original.sender_id; // Reply to original sender
-      } 
+      }
       // Farmer is replying to a message they sent (shouldn't normally happen)
       else if (parseInt(user_id) === original.sender_id) {
         receiver_id = original.receiver_id; // Reply to original receiver
@@ -977,11 +1060,11 @@ router.post('/reply', authenticate, async (req, res) => {
           message: 'You are not authorized to reply to this message'
         });
       }
-    } 
+    }
     // If user is NOT a farmer (admin, officer, etc.), set sender_id to null
     else {
       final_sender_id = null; // Non-farmers have null sender_id
-      
+
       // Admin/Officer can reply to any message
       // Determine receiver based on the original message
       if (original.sender_id === null) {
@@ -1073,7 +1156,7 @@ router.get('/inbox', authenticate, async (req, res) => {
     if (user_role === 'farmer') {
       whereClause += ' AND (i.receiver_id = ? OR (i.sender_id = ? AND i.receiver_id IS NULL))';
       queryParams.push(user_id, user_id);
-    } 
+    }
     // If user is NOT a farmer (admin, officer, etc.), show messages where receiver_id IS NULL (support messages)
     else {
       whereClause += ' AND i.receiver_id IS NULL';
@@ -1209,7 +1292,7 @@ router.post('/submit-issue', authenticate, async (req, res) => {
       [problemDescription, senderId, receiverId]
     );
 
-    
+
 
     // Fetch the created record
     const [newInboxItem] = await pool.query(
@@ -1234,11 +1317,11 @@ router.post('/submit-issue', authenticate, async (req, res) => {
       }
     });
   }
-}); 
+});
 
 
 
- // GET /auth/sent-messages - Retrieve sent messages
+// GET /auth/sent-messages - Retrieve sent messages
 router.get('/sent-messages', authenticate, async (req, res) => {
   try {
     const { page = 1, limit = 20, userId } = req.query; // Get userId from query params
@@ -1273,7 +1356,7 @@ router.get('/sent-messages', authenticate, async (req, res) => {
       // For farmers: show messages where they are the sender (sender_id = their user_id)
       countQuery = `SELECT COUNT(*) as total FROM inbox WHERE sender_id = ?`;
       countParams = [userId];
-      
+
       selectQuery = `
         SELECT 
           i.id, 
@@ -1298,7 +1381,7 @@ router.get('/sent-messages', authenticate, async (req, res) => {
       // (since non-farmers' sent messages have null sender_id)
       countQuery = `SELECT COUNT(*) as total FROM inbox WHERE sender_id IS NULL`;
       countParams = [];
-      
+
       selectQuery = `
         SELECT 
           i.id, 
@@ -1379,7 +1462,7 @@ router.get('/sent-messages', authenticate, async (req, res) => {
   }
 });
 
- 
+
 
 
 
@@ -1479,7 +1562,7 @@ router.post('/reset-password', async (req, res) => {
         'SELECT firebase_uid FROM users WHERE id = ?',
         [user.id]
       );
-      
+
       if (!userRecords.length) {
         return res.status(404).json({
           success: false,
@@ -1492,7 +1575,7 @@ router.post('/reset-password', async (req, res) => {
       }
 
       const firebaseUid = userRecords[0].firebase_uid;
-      
+
       // Update password in Firebase only (removed MySQL password update)
       await admin.auth().updateUser(firebaseUid, {
         password: newPassword
@@ -1642,8 +1725,8 @@ router.post('/forgot-password', async (req, res) => {
 
     // Send OTP via email using Gmail service
     try {
-      const subject = 'Password Reset OTP'; 
-      
+      const subject = 'Password Reset OTP';
+
       const message = `
       <!DOCTYPE html>
       <html>
@@ -2175,7 +2258,7 @@ router.post('/register-farmer', async (req, res) => {
       maleMembers,
       femaleMembers,
       motherMaidenName,
-      religion, 
+      religion,
       personToNotify,
       ptnContact,
       ptnRelationship,
@@ -2274,7 +2357,7 @@ router.post('/register-farmer', async (req, res) => {
         maleMembers || 0,
         femaleMembers || 0,
         motherMaidenName || null,
-        religion || null, 
+        religion || null,
         personToNotify || null,
         ptnContact || null,
         ptnRelationship || null,
@@ -2332,7 +2415,7 @@ router.post('/register-farmer', async (req, res) => {
           motherMaidenName: completeFarmer[0].mother_maiden_name,
           religion: completeFarmer[0].religion
         },
-        contactInfo: { 
+        contactInfo: {
           personToNotify: completeFarmer[0].person_to_notify,
           ptnContact: completeFarmer[0].ptn_contact,
           ptnRelationship: completeFarmer[0].ptn_relationship
@@ -2493,7 +2576,7 @@ router.post('/login', async (req, res) => {
         name: user.name,
         role: user.role,
         fname: user.fname,
-        contact:user.contact,
+        contact: user.contact,
         lname: user.lname,
         sector_id: user.sector_id,
         status: user.status,
@@ -2595,7 +2678,7 @@ router.post('/login', async (req, res) => {
 router.post('/migrate-to-google', authenticate, async (req, res) => {
   try {
     const { accessToken } = req.body;
-    
+
     // 1. Verify authentication
     if (!req.user || !req.user.dbUser) {
       return res.status(401).json({
@@ -2605,12 +2688,12 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
     }
 
     const currentUser = req.user.dbUser;
-    
+
     // 2. Verify Google access token
     const tokenInfo = await axios.get('https://www.googleapis.com/oauth2/v3/tokeninfo', {
       params: { access_token: accessToken }
     });
-    
+
     if (tokenInfo.data.error) {
       return res.status(401).json({
         success: false,
@@ -2620,7 +2703,7 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
 
     const googleEmail = tokenInfo.data.email;
     const googleUid = tokenInfo.data.sub;
-  
+
     // 3. Check if Google account is already linked to another user
     try {
       const existingUser = await admin.auth().getUserByEmail(googleEmail);
@@ -2638,7 +2721,7 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
 
     // 4. Get current auth user data
     const currentAuthUser = await admin.auth().getUser(currentUser.firebase_uid);
-    
+
     // 5. Check if already using Google auth
     if (currentAuthUser.providerData.some(provider => provider.providerId === 'google.com')) {
       return res.status(400).json({
@@ -2656,7 +2739,7 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
       const emailProvider = currentAuthUser.providerData.find(
         provider => provider.providerId === 'password'
       );
-      
+
       if (emailProvider) {
         await admin.auth().updateUser(currentUser.firebase_uid, {
           email: googleEmail,
@@ -2692,7 +2775,7 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
         'SELECT * FROM users WHERE firebase_uid = ?',
         [currentUser.firebase_uid]
       );
-      
+
       res.status(200).json({
         success: true,
         message: 'Successfully migrated to Google authentication',
@@ -2715,10 +2798,10 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
 
   } catch (error) {
     console.error('Google migration error:', error);
-    
+
     let errorMessage = 'Failed to migrate to Google authentication';
     let statusCode = 500;
-    
+
     if (error.code === 'auth/id-token-expired') {
       errorMessage = 'Google token expired';
       statusCode = 401;
@@ -2742,7 +2825,7 @@ router.post('/migrate-to-google', authenticate, async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});   
+});
 
 
 
@@ -3051,7 +3134,7 @@ router.post('/users', authenticate, async (req, res) => {
 
 
 
- 
+
 
 
 
@@ -3103,11 +3186,6 @@ router.get('/users', authenticate, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch users' });
   }
 });
- 
- 
- 
-
- 
 
 
 
@@ -3116,12 +3194,17 @@ router.get('/users', authenticate, async (req, res) => {
 
 
 
-router.get('/top-contributors',authenticate ,async (req, res) => {
+
+
+
+
+
+router.get('/top-contributors', authenticate, async (req, res) => {
   try {
     // First verify basic table access
     const [farmerCount] = await pool.query('SELECT COUNT(*) as count FROM farmers');
     const [yieldCount] = await pool.query('SELECT COUNT(*) as count FROM farmer_yield WHERE volume > 0 AND status = "Accepted"');
-    
+
     // If no data exists, return early with informative message
     if (farmerCount[0].count === 0 || yieldCount[0].count === 0) {
       return res.json({
@@ -3179,7 +3262,7 @@ router.get('/top-contributors',authenticate ,async (req, res) => {
   }
 });
 
- 
+
 
 router.delete('/users/:id', authenticate, async (req, res) => {
   try {
@@ -3251,11 +3334,11 @@ router.delete('/users/:id', authenticate, async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
-});  
+});
 
 
 
-router.get('/user-statistics',authenticate, async (req, res) => {
+router.get('/user-statistics', authenticate, async (req, res) => {
   try {
     const { year } = req.query;
 
@@ -3343,8 +3426,8 @@ router.get('/user-statistics',authenticate, async (req, res) => {
       }
     });
   }
-}); 
+});
 
- 
+
 module.exports = router;
 
