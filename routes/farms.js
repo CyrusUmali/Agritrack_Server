@@ -16,26 +16,40 @@ router.get('/farm-statistics', authenticate , async (req, res) => {
 
     // Helper function to add filters
     const addFilters = (baseQuery, options = {}) => {
-      let query = baseQuery;
-      const params = [];
-      const conditions = [];
+  let query = baseQuery;
+  const params = [];
+  const conditions = [];
 
-      if (year) {
-        conditions.push(`YEAR(${options.dateField || 'created_at'}) = ?`);
-        params.push(year);
-      }
+  if (year) {
+    conditions.push(`YEAR(${options.dateField || 'created_at'}) = ?`);
+    params.push(year);
+  }
 
-      if (userSectorId) {
-        conditions.push(`${options.sectorField || 'sector_id'} = ?`);
-        params.push(userSectorId);
-      }
+  if (userSectorId) {
+    conditions.push(`${options.sectorField || 'sector_id'} = ?`);
+    params.push(userSectorId);
+  }
 
-      if (conditions.length > 0) {
-        query += ` WHERE ${conditions.join(' AND ')}`;
-      }
+  if (conditions.length === 0) {
+    return { query, params };
+  }
 
-      return { query, params };
-    };
+  // Check if GROUP BY exists
+  const groupByIndex = query.toUpperCase().indexOf("GROUP BY");
+
+  if (groupByIndex !== -1) {
+    // Insert WHERE before GROUP BY
+    const beforeGroup = query.substring(0, groupByIndex);
+    const afterGroup = query.substring(groupByIndex);
+
+    query = `${beforeGroup} WHERE ${conditions.join(" AND ")} ${afterGroup}`;
+  } else {
+    // Normal query
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  return { query, params };
+};
 
     // 1. Total farms count
     const farmQuery = addFilters(
