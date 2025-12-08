@@ -231,40 +231,236 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
 
 
 
-// System prompt - Tagalog only
-const SYSTEM_PROMPT = `Ikaw ay AgriBot, isang dalubhasa sa agrikultura na nag-aalok ng tulong sa:
-- Pagpili at pagpaplano ng pananim
-- Kalusugan at pagsusuri ng lupa
-- Pamamahala sa peste at sakit ng halaman
-- Sistema ng tubig at irigasyon
-- Pataba at pamamahala ng sustansya
-- Gabay sa pagtatanim ayon sa panahon
-- Pagsasaayos sa klima at panahon
-- Mga teknik sa pag-ani at imbakan
-- Organiko at sustainable na pagsasaka
-- Pamamahala ng hayop (baka, manok, kambing, tupa, baboy)
-- Nutrisyon at pagpapakain ng hayop
-- Kalusugan at kontrol ng sakit ng hayop
-- Sistema ng pangisdaan at aquaculture
-- Mga teknik sa fish farming
-- Pamamahala ng pond at kalidad ng tubig
-- Kalusugan at sakit ng isda
+const SYSTEM_PROMPT = `
+You are AgriBot, an agricultural assistant for Filipino farmers. Your responses should be in clear, simple Tagalog/Filipino.
 
-Magbigay ng praktikal at kapaki-pakinabang na payo na akma sa pangangailangan ng user. Magtanong tungkol sa kanilang rehiyon, uri ng lupa, kasalukuyang kondisyon, at setup ng hayop/pangisdaan kung kinakailangan. Panatilihing maikli ngunit makahulugan ang mga sagot.
+## IMPORTANT FORMATTING RULES:
+1. ALWAYS end EVERY response with exactly 4 follow-up questions
+2. Use this EXACT format for follow-up questions:
+   [FOLLOW_UP_QUESTIONS]
+   1. First question here
+   2. Second question here
+   3. Third question here
+   4. Fourth question here
+   [/FOLLOW_UP_QUESTIONS]
 
-MAHALAGA: Pagkatapos ng iyong sagot, magdagdag ng 3-4 nauugnay na tanong na maaaring itanong ng user. I-format ito sa dulo tulad nito:
+3. Do NOT use bullet points (*), dashes (-), or other markers
+4. Use ONLY numbers (1., 2., 3., 4.)
+5. The follow-up questions should be relevant to the current response
+
+## Response Structure:
+1. First, answer the user's question concisely
+2. Then add exactly 4 follow-up questions in the format above
+3. Do NOT include any text after the [/FOLLOW_UP_QUESTIONS] marker
+
+Example of correct format:
+[Your response to the user's question goes here...]
 
 [FOLLOW_UP_QUESTIONS]
-- Tanong 1?
-- Tanong 2?
-- Tanong 3?
-- Tanong 4?
+1. Paano ko masusukat ang tamang temperatura para sa aking pananim?
+2. Ano ang mga senyales ng stress sa init sa mga halaman?
+3. May mga pananim bang mas matibay sa mainit na panahon?
+4. Paano ko mapoprotektahan ang aking pananim sa sobrang lamig?
 [/FOLLOW_UP_QUESTIONS]
 
-Gawing praktikal, maikli, at direktang nauugnay sa iyong sagot ang mga tanong.`;
+Remember: EVERY response MUST include this format. No exceptions.
+`;
+ 
+ 
 
-// Store chat sessions per user (in production, use Redis or database)
-const chatSessions = new Map();
+
+
+router.post('/chatbot/message', authenticate, async (req, res) => {
+  const userId = req.user.firebaseUid;
+
+  try {
+    const { message } = req.body;
+
+    if (!message?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Kailangan ng mensahe'
+      });
+    }
+
+    // Create new model instance for each request
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash-lite',
+      systemInstruction: SYSTEM_PROMPT,
+    });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+ 
+    const result = await model.generateContentStream(message);
+    
+    let fullResponse = '';
+    let chunkCount = 0;
+
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        fullResponse += text;
+        chunkCount++;
+        res.write(`data: ${JSON.stringify({ chunk: text, done: false })}\n\n`);
+      }
+    }
+
+    // Extract suggestions from response
+    const extracted = extractSuggestionsFromResponse(fullResponse);
+
+    res.write(`data: ${JSON.stringify({
+      chunk: '',
+      done: true,
+      fullResponse: extracted.response,
+      suggestions: extracted.suggestions
+    })}\n\n`);
+
+    res.end();
+
+  } catch (error) {
+    console.error(`❌ Error for user ${userId}:`, error);
+    
+    try {
+      res.write(`data: ${JSON.stringify({
+        error: true,
+        message: 'Paumanhin, may problema sa pagkonekta sa AI service. Pakisubukan muli sandali.'
+      })}\n\n`);
+      res.end();
+    } catch (writeError) {
+      // Handle write error
+    }
+  }
+});
+
+
+
+
+
+function extractSuggestionsFromResponse(fullResponse) {
+  console.log('🔍 Extracting suggestions from response...');
+  console.log('📏 Response length:', fullResponse.length);
+  
+  const startMarker = '[FOLLOW_UP_QUESTIONS]';
+  const endMarker = '[/FOLLOW_UP_QUESTIONS]';
+  
+  // Try to find markers first
+  if (fullResponse.includes(startMarker) && fullResponse.includes(endMarker)) {
+    const startIndex = fullResponse.indexOf(startMarker);
+    const endIndex = fullResponse.indexOf(endMarker);
+
+    const cleanResponse = fullResponse.substring(0, startIndex).trim();
+    const suggestionsSection = fullResponse
+      .substring(startIndex + startMarker.length, endIndex)
+      .trim();
+    
+    console.log(`📋 Suggestions section extracted:`, suggestionsSection);
+    
+    const suggestions = suggestionsSection
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .map(line => line.replace(/^[-*•]\s*|^\d+\.\s*/, '').trim())
+      .filter(line => line.length > 5)
+      .slice(0, 4);
+    
+    console.log(`✅ Extracted ${suggestions.length} suggestions with markers`);
+    
+    if (suggestions.length >= 4) {
+      return {
+        response: cleanResponse,
+        suggestions: suggestions
+      };
+    }
+  }
+  
+  // Fallback: Try to extract numbered questions from the end of response
+  console.log('⚠️ Markers not found, trying regex fallback...');
+  
+  // Look for numbered lines (1., 2., 3., 4.) in the last part of response
+  const lines = fullResponse.split('\n');
+  const numberedLines = [];
+  
+  // Search from the end backwards
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 20); i--) {
+    const line = lines[i].trim();
+    // Match lines starting with "1.", "2.", "3.", "4."
+    const match = line.match(/^(\d+)\.\s*(.+)$/);
+    if (match && match[2].length > 10) {
+      numberedLines.unshift({
+        number: parseInt(match[1]),
+        text: match[2].trim()
+      });
+    }
+  }
+  
+  // If we found 4 consecutive numbered items (1, 2, 3, 4), use them
+  if (numberedLines.length >= 4) {
+    const consecutiveQuestions = [];
+    for (let i = 0; i < numberedLines.length - 3; i++) {
+      if (numberedLines[i].number === 1 &&
+          numberedLines[i + 1].number === 2 &&
+          numberedLines[i + 2].number === 3 &&
+          numberedLines[i + 3].number === 4) {
+        consecutiveQuestions.push(
+          numberedLines[i].text,
+          numberedLines[i + 1].text,
+          numberedLines[i + 2].text,
+          numberedLines[i + 3].text
+        );
+        break;
+      }
+    }
+    
+    if (consecutiveQuestions.length === 4) {
+      console.log(`✅ Found 4 questions using regex fallback`);
+      
+      // Remove the questions from the response
+      let cleanResponse = fullResponse;
+      consecutiveQuestions.forEach(q => {
+        const qPattern = new RegExp(`\\d+\\.\\s*${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g');
+        cleanResponse = cleanResponse.replace(qPattern, '');
+      });
+      
+      return {
+        response: cleanResponse.trim(),
+        suggestions: consecutiveQuestions
+      };
+    }
+  }
+  
+  console.log(`❌ Could not extract questions, using fallback`);
+  
+  return {
+    response: fullResponse,
+    suggestions: getFallbackSuggestions()
+  };
+}
+
+function getFallbackSuggestions() {
+  return [
+    'Maaari mo bang ipaliwanag pa?',
+    'Ano ang mga benepisyo?',
+    'May iba pa bang paraan?',
+    'Paano ako magsisimula?'
+  ];
+}
+
+
+
+
+function getFallbackSuggestions() {
+  return [
+    'Maaari mo bang ipaliwanag pa?',
+    'Ano ang mga benepisyo?',
+    'May iba pa bang paraan?',
+    'Paano ako magsisimula?'
+  ];
+}
+
+
 
 // Test endpoint to verify Gemini works
 router.get('/chatbot/test', async (req, res) => {
@@ -293,217 +489,7 @@ router.get('/chatbot/test', async (req, res) => {
   }
 });
 
-// Initialize chat session for user
-router.post('/chatbot/init', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.firebaseUid;
-    console.log(`📱 Initializing chat for user: ${userId}`);
-
-  
-
-    const chatSession = model.startChat();
-    chatSessions.set(userId, chatSession);
-
-    console.log(`✅ Chat initialized for user: ${userId}`);
-
-    res.status(200).json({
-      success: true,
-      message: 'Chat session initialized',
-      welcomeMessage: 'Kumusta! Ako si AgriBot, ang iyong tulong sa agrikultura. Paano kita matutulungan ngayong araw?',
-      suggestions: [
-        'Sabihin mo ang tungkol sa kalusugan ng lupa',
-        'Anong pananim ang dapat kong itanim?',
-        'Paano ko kontrolin ang peste?',
-        'Ano ang pinakamahusay na irigasyon?'
-      ]
-    });
-  } catch (error) {
-    console.error('❌ Error initializing chat:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Hindi ma-initialize ang chat session',
-      error: error.message
-    });
-  }
-});
-
-// Send message to chatbot (streaming)
-router.post('/chatbot/message', authenticate, async (req, res) => {
-  const userId = req.user.firebaseUid;
-
-  try {
-    const { message } = req.body;
-
-    console.log(`💬 Message from user ${userId}:`, message);
-
-    if (!message || message.trim() === '') {
-      console.log('⚠️ Empty message received');
-      return res.status(400).json({
-        success: false,
-        message: 'Kailangan ng mensahe'
-      });
-    }
-
-    // Get or create chat session
-    let chatSession = chatSessions.get(userId);
-    if (!chatSession) {
-      console.log(`🔄 Creating new session for user: ${userId}`);
-      const model = genAI.getGenerativeModel({
-        model: 'gemini-2.5-flash-lite',
-        systemInstruction: SYSTEM_PROMPT,
-      });
-      chatSession = model.startChat();
-      chatSessions.set(userId, chatSession);
-    }
-
-    // Set headers for SSE (Server-Sent Events)
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for Nginx
-
-    console.log(`🤖 Sending to Gemini...`);
-
-    // Send message and stream response
-    const result = await chatSession.sendMessageStream(message);
-
-    let fullResponse = '';
-    let chunkCount = 0;
-
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      if (text) {
-        fullResponse += text;
-        chunkCount++;
-
-        // Send chunk to client
-        res.write(`data: ${JSON.stringify({ chunk: text, done: false })}\n\n`);
-
-        // Log every 10 chunks
-        if (chunkCount % 10 === 0) {
-          console.log(`📦 Sent ${chunkCount} chunks...`);
-        }
-      }
-    }
-
-    console.log(`✅ Completed streaming ${chunkCount} chunks`);
-
-    // Extract suggestions from full response
-    const extracted = extractSuggestionsFromResponse(fullResponse);
-
-    // Send final message with suggestions
-    res.write(`data: ${JSON.stringify({
-      chunk: '',
-      done: true,
-      fullResponse: extracted.response,
-      suggestions: extracted.suggestions
-    })}\n\n`);
-
-    res.end();
-
-  } catch (error) {
-    console.error(`❌ Error for user ${userId}:`, error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    });
-
-    // Send error through SSE
-    try {
-      res.write(`data: ${JSON.stringify({
-        error: true,
-        message: 'Paumanhin, may problema sa pagkonekta sa AI service. Pakisubukan muli sandali.',
-        errorDetails: error.message
-      })}\n\n`);
-      res.end();
-    } catch (writeError) {
-      console.error('❌ Could not write error response:', writeError);
-    }
-  }
-});
-
-// Clear chat history
-router.post('/chatbot/clear', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.firebaseUid;
-    console.log(`🗑️ Clearing chat for user: ${userId}`);
-
-    // Create new session
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash-lite',
-      systemInstruction: SYSTEM_PROMPT,
-    });
-
-    const chatSession = model.startChat();
-    chatSessions.set(userId, chatSession);
-
-    console.log(`✅ Chat cleared for user: ${userId}`);
-
-    res.status(200).json({
-      success: true,
-      message: 'Na-clear na ang chat history',
-      welcomeMessage: 'Kumusta! Ako si AgriBot, ang iyong tulong sa agrikultura. Paano kita matutulungan ngayong araw?',
-      suggestions: [
-        'Sabihin mo ang tungkol sa kalusugan ng lupa',
-        'Anong pananim ang dapat kong itanim?',
-        'Paano ko kontrolin ang peste?',
-        'Ano ang pinakamahusay na irigasyon?'
-      ]
-    });
-  } catch (error) {
-    console.error('❌ Error clearing chat:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Hindi ma-clear ang chat',
-      error: error.message
-    });
-  }
-});
-
-// Helper function to extract suggestions
-function extractSuggestionsFromResponse(fullResponse) {
-  const startMarker = '[FOLLOW_UP_QUESTIONS]';
-  const endMarker = '[/FOLLOW_UP_QUESTIONS]';
-
-  if (fullResponse.includes(startMarker) && fullResponse.includes(endMarker)) {
-    const startIndex = fullResponse.indexOf(startMarker);
-    const endIndex = fullResponse.indexOf(endMarker);
-
-    const cleanResponse = fullResponse.substring(0, startIndex).trim();
-    const suggestionsSection = fullResponse
-      .substring(startIndex + startMarker.length, endIndex)
-      .trim();
-
-    const suggestions = suggestionsSection
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0)
-      .map(line => line.replace(/^[-*•]\s*|^\d+\.\s*/, '').trim())
-      .filter(line => line.length > 5)
-      .slice(0, 4);
-
-    return {
-      response: cleanResponse,
-      suggestions: suggestions.length > 0 ? suggestions : getFallbackSuggestions()
-    };
-  }
-
-  return {
-    response: fullResponse,
-    suggestions: getFallbackSuggestions()
-  };
-}
-
-function getFallbackSuggestions() {
-  return [
-    'Maaari mo bang ipaliwanag pa?',
-    'Ano ang mga benepisyo?',
-    'May iba pa bang paraan?',
-    'Paano ako magsisimula?'
-  ];
-}
-
+ 
 
 
 
@@ -557,6 +543,8 @@ router.get('/test-gemini', async (req, res) => {
   }
 });
 
+
+ 
 
 
 
