@@ -21,15 +21,14 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
 
 
+
 // authRoutes.js
 router.post('/weather/reporter-summary', async (req, res) => {
   try {
     const { weatherData, forecastData, airQualityData, location } = req.body;
  
-
- 
-    // Create a personalized prompt for the weather reporter
-    const prompt = `You are a personal weather assistant speaking directly to me. Based on the following weather data, create a natural, conversational weather report (2-3 sentences max) as if you're speaking specifically to me. Be friendly, informative, and mention the most important conditions that I should know about.
+    // Create a farm-focused weather prompt
+    const prompt = `You are an agricultural weather advisor. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for farm operations. Focus on agricultural impacts and actionable advice for farmers.
 
 Current Weather:
 - Temperature: ${weatherData.temperature}°C (feels like ${weatherData.feelsLike}°C)
@@ -52,27 +51,34 @@ Tomorrow:
 - Condition: ${forecastData[1]?.description}
 ` : ''}
 
-Create a brief, personal weather report just for me. Use "you/your" pronouns and speak directly to me. Don't use bullet points. Give me advice based on the conditions (like if I should bring an umbrella, wear a jacket, etc.).`;
+Create a brief agricultural weather advisory. Focus on:
+1. Field work suitability (spraying, planting, harvesting)
+2. Crop protection advice (frost risk, wind damage, etc.)
+3. Livestock considerations
+4. Irrigation needs based on rainfall and humidity
+5. Soil moisture implications
+
+Speak directly to farmers using "you/your" for the farm operation. Be practical and specific.`;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const summary = response.text();
  
-
     res.status(200).json({
       success: true,
       summary: summary.trim(),
-      message: 'Personal weather summary generated successfully'
+      message: 'Farm weather summary generated successfully'
     });
   } catch (error) {
-    console.error('❌ Failed to generate personal weather summary:', error);
+    console.error('❌ Failed to generate farm weather summary:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to generate personal weather summary',
+      message: 'Failed to generate farm weather summary',
       error: error.message
     });
   }
 });
+
 
 
 // Test endpoint to verify Gemini works

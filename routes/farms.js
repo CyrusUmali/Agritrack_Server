@@ -14,28 +14,57 @@ router.get('/farm-statistics', authenticate , async (req, res) => {
     const { year } = req.query;
     const userSectorId = req.user?.dbUser?.sector_id;
 
-    // Helper function to add filters
+    
+    
+
     const addFilters = (baseQuery, options = {}) => {
       let query = baseQuery;
       const params = [];
       const conditions = [];
-
+    
       if (year) {
         conditions.push(`YEAR(${options.dateField || 'created_at'}) = ?`);
         params.push(year);
       }
-
+    
       if (userSectorId) {
         conditions.push(`${options.sectorField || 'sector_id'} = ?`);
         params.push(userSectorId);
       }
-
+    
       if (conditions.length > 0) {
-        query += ` WHERE ${conditions.join(' AND ')}`;
+        // Check if there's already a WHERE clause in the base query
+        const baseUpper = baseQuery.toUpperCase();
+        if (baseUpper.includes('WHERE')) {
+          query += ` AND ${conditions.join(' AND ')}`;
+        } else if (baseUpper.includes('GROUP BY') || baseUpper.includes('ORDER BY') || baseUpper.includes('LIMIT')) {
+          // Insert WHERE before GROUP BY/ORDER BY/LIMIT
+          const groupByIndex = baseUpper.indexOf('GROUP BY');
+          const orderByIndex = baseUpper.indexOf('ORDER BY');
+          const limitIndex = baseUpper.indexOf('LIMIT');
+          
+          let insertIndex = Math.min(
+            groupByIndex > -1 ? groupByIndex : Infinity,
+            orderByIndex > -1 ? orderByIndex : Infinity,
+            limitIndex > -1 ? limitIndex : Infinity
+          );
+          
+          if (insertIndex === Infinity) {
+            query += ` WHERE ${conditions.join(' AND ')}`;
+          } else {
+            query = query.slice(0, insertIndex) + ` WHERE ${conditions.join(' AND ')} ` + query.slice(insertIndex);
+          }
+        } else {
+          query += ` WHERE ${conditions.join(' AND ')}`;
+        }
       }
-
+    
       return { query, params };
     };
+
+
+
+
 
     // 1. Total farms count
     const farmQuery = addFilters(
