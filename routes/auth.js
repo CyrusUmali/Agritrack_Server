@@ -6,6 +6,63 @@ const admin = require('firebase-admin');
 const pool = require('../connect');
 const axios = require('axios');
 
+
+ 
+// GET /test-gemini - Test Gemini request through OpenRouter
+router.get('/test-open-router', async (req, res) => {
+  try {
+    const apiKey = process.env.OPEN_ROUTER_API_KEY;
+
+    if (!apiKey) {
+      return res.status(500).json({
+        success: false,
+        message: 'OpenRouter API key not configured',
+        error: {
+          code: 'MISSING_API_KEY',
+          details: 'OPEN_ROUTER_API_KEY is missing in .env'
+        }
+      });
+    }
+
+    // Call Gemini via OpenRouter
+    const response = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: "deepseek/deepseek-v3.2",
+        max_tokens: 256, 
+        messages: [
+          { role: "user", content: "Hello , say hi in one sentence." }
+        ]
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "test successful",
+      data: response.data
+    });
+
+  } catch (error) {
+    console.error(" API Test Error:", error.response?.data || error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "test failed",
+      error: {
+        code: "TEST_ERROR",
+        details: error.response?.data || error.message
+      }
+    });
+  }
+});
+ 
+
 const { sendTestEmail } = require('../gmailService'); // update path as needed
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -22,12 +79,130 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
 
 
-// authRoutes.js
+// // authRoutes.js
+// router.post('/weather/reporter-summary', async (req, res) => {
+//   try {
+//     const { weatherData, forecastData, airQualityData, location } = req.body;
+ 
+//     // Create a farm-focused weather prompt
+//     const prompt = `You are an agricultural weather advisor. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for farm operations. Focus on agricultural impacts and actionable advice for farmers.
+
+// Current Weather:
+// - Temperature: ${weatherData.temperature}°C (feels like ${weatherData.feelsLike}°C)
+// - Condition: ${weatherData.description}
+// - Humidity: ${weatherData.humidity}%
+// - Wind Speed: ${weatherData.windSpeed} m/s
+// - Visibility: ${weatherData.visibility / 1000} km
+// - Clouds: ${weatherData.clouds}%
+// ${weatherData.rain1h ? `- Rainfall: ${weatherData.rain1h} mm in last hour` : ''}
+
+// ${airQualityData ? `Air Quality: ${airQualityData.quality} (AQI ${airQualityData.aqi})` : ''}
+
+// ${forecastData && forecastData.length > 0 ? `
+// Today's Forecast:
+// - High: ${forecastData[0].tempMax}°C, Low: ${forecastData[0].tempMin}°C
+// - Condition: ${forecastData[0].description}
+
+// Tomorrow:
+// - High: ${forecastData[1]?.tempMax}°C, Low: ${forecastData[1]?.tempMin}°C
+// - Condition: ${forecastData[1]?.description}
+// ` : ''}
+
+// Create a brief agricultural weather advisory. Focus on:
+// 1. Field work suitability (spraying, planting, harvesting)
+// 2. Crop protection advice (frost risk, wind damage, etc.)
+// 3. Livestock considerations
+// 4. Irrigation needs based on rainfall and humidity
+// 5. Soil moisture implications
+
+// Speak directly to farmers using "you/your" for the farm operation. Be practical and specific.`;
+
+//     const result = await model.generateContent(prompt);
+//     const response = await result.response;
+//     const summary = response.text();
+ 
+//     res.status(200).json({
+//       success: true,
+//       summary: summary.trim(),
+//       message: 'Farm weather summary generated successfully'
+//     });
+//   } catch (error) {
+//     console.error('❌ Failed to generate farm weather summary:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to generate farm weather summary',
+//       error: error.message
+//     });
+//   }
+// });
+
+
+
+
+
 router.post('/weather/reporter-summary', async (req, res) => {
   try {
-    const { weatherData, forecastData, airQualityData, location } = req.body;
- 
-    // Create a farm-focused weather prompt
+    const { weatherData, forecastData, airQualityData, location, products } = req.body;
+
+    // Validate required data
+    if (!weatherData) {
+      return res.status(400).json({
+        success: false,
+        message: 'Weather data is required',
+        error: { code: 'MISSING_WEATHER_DATA' }
+      });
+    }
+
+    const apiKey = process.env.OPEN_ROUTER_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({
+        success: false,
+        message: 'OpenRouter API key not configured',
+        error: {
+          code: 'MISSING_API_KEY',
+          details: 'OPEN_ROUTER_API_KEY is missing in .env'
+        }
+      });
+    }
+
+    // Handle products - if not provided or empty array
+    let productList = [];
+    let hasProducts = false;
+    
+    if (products && Array.isArray(products) && products.length > 0) {
+      // Limit to top 5 products to avoid overly long prompts
+      const limitedProducts = products.slice(0, 5);
+      
+      productList = limitedProducts.map(product => {
+        if (typeof product === 'string') {
+          // Handle format "129: Corn" or just "Corn"
+          const parts = product.split(':');
+          return parts.length > 1 ? parts[1].trim() : product.trim();
+        }
+        return String(product).trim();
+      }).filter(product => product.length > 0); // Remove any empty strings
+      
+      hasProducts = productList.length > 0;
+      
+      // Log if we truncated the list
+      if (products.length > 5) {
+        console.log(`Truncated product list from ${products.length} to 5 items`);
+      }
+    }
+
+    // Build product-specific part of the prompt
+    let productsPrompt = '';
+    if (hasProducts) {
+      if (productList.length === 1) {
+        productsPrompt = `Farm is growing: ${productList[0]}. `;
+      } else if (productList.length <= 3) {
+        productsPrompt = `Farm is growing: ${productList.join(', ')}. `;
+      } else {
+        productsPrompt = `Farm is growing multiple crops including ${productList.slice(0, 3).join(', ')}${productList.length > 3 ? ` and ${productList.length - 3} more` : ''}. `;
+      }
+    }
+
+    // Farm-focused weather prompt
     const prompt = `You are an agricultural weather advisor. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for farm operations. Focus on agricultural impacts and actionable advice for farmers.
 
 Current Weather:
@@ -51,33 +226,93 @@ Tomorrow:
 - Condition: ${forecastData[1]?.description}
 ` : ''}
 
+${productsPrompt}
+
 Create a brief agricultural weather advisory. Focus on:
 1. Field work suitability (spraying, planting, harvesting)
-2. Crop protection advice (frost risk, wind damage, etc.)
+2. Crop protection advice (frost risk, wind damage, disease risk, etc.)
 3. Livestock considerations
 4. Irrigation needs based on rainfall and humidity
 5. Soil moisture implications
 
+${hasProducts ? `Provide advice tailored to ${productList.length === 1 ? 'this crop' : 'these crops'}.` : 'Provide general farm weather advice suitable for mixed farming operations.'}
+
 Speak directly to farmers using "you/your" for the farm operation. Be practical and specific.`;
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const summary = response.text();
- 
+    // List of models in priority order
+    const models = [
+      "google/gemini-2.5-flash",
+      "google/openai/gpt-4o-mini",
+      "deepseek/deepseek-v3.2"
+    ];
+
+    let summary = '';
+    let lastError = null;
+
+    for (const model of models) {
+      try {
+        const response = await axios.post(
+          'https://openrouter.ai/api/v1/chat/completions',
+          {
+            model: model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 280
+          },
+          {
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        summary = response.data.choices[0]?.message?.content || '';
+        if (summary) break; // stop on first success
+
+      } catch (error) {
+        const errData = error.response?.data;
+        // If quota error (402), skip to next model immediately
+        if (errData?.error?.code === 402) {
+          console.warn(`Quota exceeded for model ${model}, trying next model...`);
+          lastError = errData;
+          continue;
+        }
+        // For other errors, log and try next model
+        console.warn(`Error with model ${model}:`, errData || error.message);
+        lastError = errData || error;
+      }
+    }
+
+    if (!summary) {
+      return res.status(500).json({
+        success: false,
+        message: 'All models failed or are out of quota',
+        error: lastError
+      });
+    }
+
     res.status(200).json({
       success: true,
       summary: summary.trim(),
-      message: 'Farm weather summary generated successfully'
+      message: 'Farm weather summary generated successfully',
+      metadata: {
+        hasProducts: hasProducts,
+        productCount: productList.length,
+        products: hasProducts ? productList : undefined
+      }
     });
+
   } catch (error) {
-    console.error('❌ Failed to generate farm weather summary:', error);
+    console.error('❌ Failed to generate farm weather summary:', error.response?.data || error.message);
     res.status(500).json({
       success: false,
       message: 'Failed to generate farm weather summary',
-      error: error.message
+      error: error.response?.data || error.message
     });
   }
 });
+
+ 
 
 
 
@@ -118,6 +353,9 @@ function generateOTP() {
 
 
 // Add this to your authRoutes.js
+
+
+
 
 // Suitability AI suggestions endpoint (streaming)
 router.post('/suitability/suggestions', authenticate, async (req, res) => {
@@ -180,43 +418,166 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
-    console.log(`🤖 Sending to Gemini...`);
+    console.log(`🤖 Generating recommendations for ${crop}...`);
 
-  
-    // Generate streaming response
-    const result = await model.generateContentStream(prompt);
-
+    // Try primary model first
+    let primaryModelSuccess = false;
     let fullResponse = '';
     let chunkCount = 0;
 
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      if (text) {
-        fullResponse += text;
-        chunkCount++;
+    try {
+      // Generate streaming response from primary model
+      const result = await model.generateContentStream(prompt);
 
-        // Send chunk to client
-        res.write(`data: ${JSON.stringify({
-          chunk: text,
-          done: false
-        })}\n\n`);
+      for await (const chunk of result.stream) {
+        const text = chunk.text();
+        if (text) {
+          fullResponse += text;
+          chunkCount++;
 
-        if (chunkCount % 10 === 0) {
-          console.log(`📦 Sent ${chunkCount} chunks...`);
+          // Send chunk to client
+          res.write(`data: ${JSON.stringify({
+            chunk: text,
+            done: false
+          })}\n\n`);
+
+          if (chunkCount % 10 === 0) {
+            console.log(`📦 Sent ${chunkCount} chunks...`);
+          }
         }
+      }
+
+      primaryModelSuccess = true;
+      console.log(`✅ Completed streaming ${chunkCount} chunks from primary model`);
+
+    } catch (primaryError) {
+      console.error(`❌ Primary model failed:`, primaryError.message);
+      
+      // Fallback to OpenRouter models
+      console.log(`🔄 Falling back to OpenRouter models...`);
+      
+      const openRouterApiKey = process.env.OPEN_ROUTER_API_KEY;
+      if (!openRouterApiKey) {
+        throw new Error('OPEN_ROUTER_API_KEY not configured');
+      }
+
+      // List of models in priority order (streaming capable models)
+      const openRouterModels = [ 
+
+        "google/gemini-2.5-flash",
+        "google/openai/gpt-4o-mini",
+        "deepseek/deepseek-v3.2"
+
+      ];
+
+      let openRouterSuccess = false;
+      let lastError = null;
+
+      for (const model of openRouterModels) {
+        try {
+          console.log(`🔄 Trying OpenRouter model: ${model}`);
+          
+          const response = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+              model: model,
+              messages: [{ role: "user", content: prompt }],
+              max_tokens: 2048,
+              stream: true  // Enable streaming
+            },
+            {
+              headers: {
+                "Authorization": `Bearer ${openRouterApiKey}`,
+                "Content-Type": "application/json",
+                "HTTP-Referer": req.headers.origin || "https://yourdomain.com",
+                "X-Title": "FarmSmart AI"
+              },
+              responseType: 'stream'
+            }
+          );
+
+          // Stream the response from OpenRouter
+          const stream = response.data;
+          openRouterSuccess = true;
+
+          stream.on('data', (chunk) => {
+            try {
+              const lines = chunk.toString().split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+                  const data = JSON.parse(line.substring(6));
+                  if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                    const text = data.choices[0].delta.content;
+                    fullResponse += text;
+                    chunkCount++;
+
+                    // Send chunk to client
+                    res.write(`data: ${JSON.stringify({
+                      chunk: text,
+                      done: false
+                    })}\n\n`);
+                  }
+                }
+              }
+            } catch (parseError) {
+              console.warn('Parse error in stream:', parseError.message);
+            }
+          });
+
+          stream.on('end', () => {
+            console.log(`✅ Completed streaming ${chunkCount} chunks from OpenRouter (${model})`);
+            // Send final message
+            res.write(`data: ${JSON.stringify({
+              chunk: '',
+              done: true,
+              fullResponse: fullResponse
+            })}\n\n`);
+            res.end();
+          });
+
+          stream.on('error', (error) => {
+            console.error(`Stream error with model ${model}:`, error.message);
+            lastError = error;
+            openRouterSuccess = false;
+            // Continue to next model
+          });
+
+          // Wait for stream to finish
+          await new Promise((resolve, reject) => {
+            stream.on('end', resolve);
+            stream.on('error', reject);
+          });
+
+          if (openRouterSuccess) break; // Stop if successful
+
+        } catch (openRouterError) {
+          const errData = openRouterError.response?.data;
+          // If quota error (402), skip to next model
+          if (errData?.error?.code === 402) {
+            console.warn(`Quota exceeded for model ${model}, trying next model...`);
+            lastError = errData;
+            continue;
+          }
+          // For other errors, log and try next model
+          console.warn(`Error with OpenRouter model ${model}:`, errData || openRouterError.message);
+          lastError = errData || openRouterError;
+        }
+      }
+
+      if (!openRouterSuccess) {
+        throw new Error(`All models failed. Last error: ${lastError?.message || 'Unknown error'}`);
       }
     }
 
-    console.log(`✅ Completed streaming ${chunkCount} chunks`);
-
-    // Send final message
-    res.write(`data: ${JSON.stringify({
-      chunk: '',
-      done: true,
-      fullResponse: fullResponse
-    })}\n\n`);
-
-    res.end();
+    // If primary model was successful, send final message
+    if (primaryModelSuccess) {
+      res.write(`data: ${JSON.stringify({
+        chunk: '',
+        done: true,
+        fullResponse: fullResponse
+      })}\n\n`);
+      res.end();
+    }
 
   } catch (error) {
     console.error(`❌ Error generating suggestions:`, error);
@@ -233,6 +594,8 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
     }
   }
 });
+
+
 
 
 
@@ -289,39 +652,198 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
       });
     }
 
-    // Create new model instance for each request
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash-lite',
-      systemInstruction: SYSTEM_PROMPT,
-    });
+    // SYSTEM_PROMPT should be defined elsewhere in your code
+    const systemPrompt = SYSTEM_PROMPT || `Ikaw ay isang AI assistant para sa FarmSmart, 
+    isang smart farming application. Ikaw ay:
+    1. Magalang at helpful
+    2. Mag-focus sa agricultural advice
+    3. Gumamit ng Tagalog at simple English
+    4. Magbigay ng praktikal na payo`;
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
- 
-    const result = await model.generateContentStream(message);
-    
+
     let fullResponse = '';
     let chunkCount = 0;
+    let modelUsed = 'unknown';
+    let usedFallback = false;
 
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      if (text) {
-        fullResponse += text;
-        chunkCount++;
-        res.write(`data: ${JSON.stringify({ chunk: text, done: false })}\n\n`);
+    // Try primary model first (Gemini)
+    try {
+      console.log(`🤖 Trying primary model for user ${userId}`);
+      
+      // Intentionally wrong model name to trigger error
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.5-flash-lite', // This should fail
+        systemInstruction: systemPrompt,
+      });
+
+      const result = await model.generateContentStream(message);
+      modelUsed = 'gemini-2.5-flash-lite';
+      
+      for await (const chunk of result.stream) {
+        const text = chunk.text();
+        if (text) {
+          fullResponse += text;
+          chunkCount++;
+          res.write(`data: ${JSON.stringify({ chunk: text, done: false })}\n\n`);
+        }
+      }
+
+      console.log(`✅ Successfully streamed ${chunkCount} chunks from primary model (${modelUsed})`);
+
+    } catch (primaryError) {
+      console.error(`❌ Primary model failed for user ${userId}:`, primaryError.message);
+      usedFallback = true;
+      
+      // Fallback to OpenRouter
+      console.log(`🔄 Falling back to OpenRouter for user ${userId}...`);
+      
+      const openRouterApiKey = process.env.OPEN_ROUTER_API_KEY;
+      if (!openRouterApiKey) {
+        throw new Error('OPEN_ROUTER_API_KEY not configured');
+      }
+
+      // List of models in priority order
+      const openRouterModels = [
+        "google/gemini-2.5-flash",
+        "google/openai/gpt-4o-mini",
+        "deepseek/deepseek-v3.2"
+      ];
+
+      let openRouterSuccess = false;
+      let lastError = null;
+
+      for (const modelName of openRouterModels) {
+        try {
+          console.log(`🔄 Trying OpenRouter model: ${modelName} for user ${userId}`);
+          
+          const response = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+              model: modelName,
+              messages: [
+                {
+                  role: "system",
+                  content: systemPrompt
+                },
+                {
+                  role: "user",
+                  content: message
+                }
+              ],
+              max_tokens: 1024,
+              stream: true,
+              temperature: 0.7
+            },
+            {
+              headers: {
+                "Authorization": `Bearer ${openRouterApiKey}`,
+                "Content-Type": "application/json",
+                "HTTP-Referer": req.headers.origin || "https://yourdomain.com",
+                "X-Title": "FarmSmart AI Chatbot"
+              },
+              responseType: 'stream'
+            }
+          );
+
+          const stream = response.data;
+          openRouterSuccess = true;
+          modelUsed = `openrouter:${modelName}`;
+
+          // Process the stream
+          await new Promise((resolve, reject) => {
+            stream.on('data', (chunk) => {
+              try {
+                const lines = chunk.toString().split('\n');
+                for (const line of lines) {
+                  if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+                    const data = JSON.parse(line.substring(6));
+                    if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                      const text = data.choices[0].delta.content;
+                      fullResponse += text;
+                      chunkCount++;
+                      res.write(`data: ${JSON.stringify({ 
+                        chunk: text, 
+                        done: false,
+                        fallback: usedFallback,
+                        model: modelName 
+                      })}\n\n`);
+                    }
+                  }
+                }
+              } catch (parseError) {
+                console.warn('Parse error in OpenRouter stream:', parseError.message);
+              }
+            });
+
+            stream.on('end', () => {
+              console.log(`✅ Completed streaming from OpenRouter (${modelName})`);
+              resolve();
+            });
+
+            stream.on('error', (error) => {
+              console.error(`Stream error with model ${modelName}:`, error.message);
+              reject(error);
+            });
+          });
+
+          if (openRouterSuccess) {
+            console.log(`✓ Fallback successful with model: ${modelName}`);
+            break; // Exit loop if successful
+          }
+
+        } catch (openRouterError) {
+          const errData = openRouterError.response?.data;
+          
+          // Handle quota errors specifically
+          if (errData?.error?.code === 402) {
+            console.warn(`❌ Quota exceeded for model ${modelName}, trying next model...`);
+            lastError = errData;
+            continue;
+          }
+          
+          // Handle rate limiting
+          if (errData?.error?.code === 429) {
+            console.warn(`❌ Rate limited for model ${modelName}, trying next model...`);
+            lastError = errData;
+            continue;
+          }
+          
+          console.warn(`❌ Error with OpenRouter model ${modelName}:`, errData?.error?.message || openRouterError.message);
+          lastError = errData || openRouterError;
+        }
+      }
+
+      if (!openRouterSuccess) {
+        throw new Error(`All OpenRouter models failed. Last error: ${lastError?.message || 'Unknown error'}`);
       }
     }
 
-    // Extract suggestions from response
-    const extracted = extractSuggestionsFromResponse(fullResponse);
+    // Extract suggestions from response (if your function exists)
+    let extracted = { response: fullResponse, suggestions: [] };
+    if (typeof extractSuggestionsFromResponse === 'function') {
+      try {
+        extracted = extractSuggestionsFromResponse(fullResponse);
+      } catch (extractError) {
+        console.warn('Failed to extract suggestions:', extractError.message);
+        extracted.response = fullResponse;
+      }
+    }
 
+    // Send final message with correct model info
+    console.log(`📊 Final stats: ${chunkCount} chunks, model: ${modelUsed}, usedFallback: ${usedFallback}`);
+    
     res.write(`data: ${JSON.stringify({
       chunk: '',
       done: true,
       fullResponse: extracted.response,
-      suggestions: extracted.suggestions
+      suggestions: extracted.suggestions,
+      modelUsed: modelUsed,
+      usedFallback: usedFallback,
+      chunkCount: chunkCount
     })}\n\n`);
 
     res.end();
@@ -330,16 +852,24 @@ router.post('/chatbot/message', authenticate, async (req, res) => {
     console.error(`❌ Error for user ${userId}:`, error);
     
     try {
+      // Send error message via SSE
       res.write(`data: ${JSON.stringify({
         error: true,
-        message: 'Paumanhin, may problema sa pagkonekta sa AI service. Pakisubukan muli sandali.'
+        message: 'Paumanhin, may problema sa pagkonekta sa AI service. Pakisubukan muli sandali.',
+        errorDetails: process.env.NODE_ENV === 'development' ? error.message : undefined
       })}\n\n`);
       res.end();
     } catch (writeError) {
-      // Handle write error
+      // If we can't write to the stream, end it
+      try {
+        res.end();
+      } catch (endError) {
+        console.error('Failed to end response:', endError);
+      }
     }
   }
 });
+
 
 
 

@@ -326,16 +326,66 @@ function generateStatusAnnouncement(oldStatus, newStatus, farmerName, productNam
 }
 
 
-// Delete a yield record
-router.delete('/yields/:id', authenticate ,  async (req, res) => {
+
+
+router.delete('/yields/:id', authenticate, async (req, res) => {
     try {
-        const [result] = await pool.query(
+        // First, get the yield record to know farm_id and product_id
+        const [yieldRecords] = await pool.query(
+            'SELECT farm_id, product_id FROM farmer_yield WHERE id = ?',
+            [req.params.id]
+        );
+
+        if (yieldRecords.length === 0) {
+            return res.status(404).json({ success: false, message: 'Yield not found' });
+        }
+
+        const { farm_id, product_id } = yieldRecords[0];
+
+        // Delete the yield record
+        const [deleteResult] = await pool.query(
             'DELETE FROM farmer_yield WHERE id = ?',
             [req.params.id]
         );
 
-        if (result.affectedRows === 0) {
+        if (deleteResult.affectedRows === 0) {
             return res.status(404).json({ success: false, message: 'Yield not found' });
+        }
+
+        // Check if there are any other yield records for this product on this farm
+        const [otherYields] = await pool.query(
+            'SELECT COUNT(*) as count FROM farmer_yield WHERE farm_id = ? AND product_id = ?',
+            [farm_id, product_id]
+        );
+
+        // If no other yields exist for this product on this farm, remove it from farm's products
+        if (otherYields[0].count === 0) {
+            // Get current farm products
+            const [farmResult] = await pool.query(
+                'SELECT products FROM farms WHERE farm_id = ?',
+                [farm_id]
+            );
+
+            if (farmResult.length > 0) {
+                const farm = farmResult[0];
+                let farmProducts = [];
+
+                try {
+                    farmProducts = JSON.parse(farm.products || '[]');
+                } catch (e) {
+                    console.error('Error parsing farm products:', e);
+                    // Continue with empty array on error
+                }
+
+                // Remove the product_id from farm's products if it exists
+                const updatedProducts = farmProducts.filter(product => product !== product_id);
+
+                // Update the farm record
+                await pool.query(
+                    'UPDATE farms SET products = ? WHERE farm_id = ?',
+                    [JSON.stringify(updatedProducts), farm_id]
+                );
+            }
         }
 
         res.json({ success: true, message: 'Yield deleted successfully' });
@@ -344,6 +394,7 @@ router.delete('/yields/:id', authenticate ,  async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to delete yield' });
     }
 });
+
 
 
 
