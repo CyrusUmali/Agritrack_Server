@@ -3009,8 +3009,139 @@ router.post('/register-farmer', async (req, res) => {
 });
 
 
+router.post('/accept-terms', async (req, res) => {
+  try {
+    const { userId } = req.body;
 
+    // Validate required field
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required',
+        error: {
+          code: 'MISSING_USER_ID',
+          details: 'No userId provided in request body'
+        }
+      });
+    }
 
+    // Check if user exists
+    let users;
+    try {
+      [users] = await pool.query(
+        'SELECT id, email, name, terms_accepted FROM users WHERE id = ?',
+        [userId]
+      );
+    } catch (dbError) {
+      console.error('Database query failed:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database operation failed',
+        error: {
+          code: 'DATABASE_ERROR',
+          details: dbError.message,
+          sqlMessage: dbError.sqlMessage,
+          sqlState: dbError.sqlState
+        }
+      });
+    }
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        error: {
+          code: 'USER_NOT_FOUND',
+          details: `User with ID ${userId} not found in database`
+        }
+      });
+    }
+
+    const user = users[0];
+
+    // Check if terms are already accepted
+    if (user.terms_accepted) {
+      return res.status(200).json({
+        success: true,
+        message: 'Terms already accepted',
+        data: {
+          userId: user.id,
+          email: user.email,
+          name: user.name,
+          termsAccepted: true,
+          acceptedAt: null // If you don't store timestamp
+        }
+      });
+    }
+
+    // Update user's terms acceptance
+    try {
+      const acceptedAt = new Date().toISOString();
+      
+   
+
+      // Alternative if you don't want to store timestamp:
+      const [result] = await pool.query(
+        'UPDATE users SET terms_accepted = ? WHERE id = ?',
+        [true, userId]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to update terms acceptance',
+          error: {
+            code: 'UPDATE_FAILED',
+            details: 'No rows were affected by the update'
+          }
+        });
+      }
+
+      // Get updated user data
+      const [updatedUsers] = await pool.query(
+        'SELECT id, email, name, terms_accepted FROM users WHERE id = ?',
+        [userId]
+      );
+
+      const updatedUser = updatedUsers[0];
+
+      res.status(200).json({
+        success: true,
+        message: 'Terms and conditions accepted successfully',
+        data: {
+          userId: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name, 
+        }
+      });
+
+    } catch (updateError) {
+      console.error('Update failed:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update terms acceptance',
+        error: {
+          code: 'UPDATE_ERROR',
+          details: updateError.message,
+          sqlMessage: updateError.sqlMessage,
+          sqlState: updateError.sqlState
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Unexpected error in accept-terms:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        details: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      }
+    });
+  }
+});
 
 router.post('/login', async (req, res) => {
   try {
@@ -3118,10 +3249,11 @@ router.post('/login', async (req, res) => {
         lname: user.lname,
         sector_id: user.sector_id,
         status: user.status,
+        termsAccepted: Boolean(user.terms_accepted),
         authProvider: isGoogleSignIn ? 'google' : 'email',
         hasPassword: !isGoogleSignIn,
-        createdAt: user.created_at, // Include the created_at timestamp
-        photoUrl: user.photo_url // Also included photoUrl if it exists in your table
+        createdAt: user.created_at,
+        photoUrl: user.photo_url
       },
       token: firebaseToken,
       tokenInfo: {
@@ -3209,8 +3341,6 @@ router.post('/login', async (req, res) => {
     });
   }
 });
-
-
 
 
 router.post('/migrate-to-google', authenticate, async (req, res) => {
