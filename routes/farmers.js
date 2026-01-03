@@ -10,7 +10,6 @@ const { sendTestEmail } = require('../gmailService'); // update path as needed
  
   
 
-
 router.get('/farmers', authenticate, async (req, res) => {
   try {
     const [farmers] = await pool.query(`
@@ -29,18 +28,18 @@ router.get('/farmers', authenticate, async (req, res) => {
         f.created_at,
         f.updated_at,
         s.sector_name as sector,
-        s.sector_id as sectorId, 
-
+        s.sector_id as sectorId,
         a.name as AssociationName,
-        a.id as AssociationId, 
-
+        a.id as AssociationId,
+        u.status as accountStatus,  -- Added this line
         f.barangay,
         f.phone,        
         f.farm_name as farmName,  
         f.total_land_area          
       FROM farmers f
       LEFT JOIN sectors s ON f.sector_id = s.sector_id 
-       LEFT JOIN associations a ON f.assoc_id = a.id 
+      LEFT JOIN associations a ON f.assoc_id = a.id 
+      LEFT JOIN users u ON f.user_id = u.id  -- Added this line
       ORDER BY f.created_at DESC
     `);
 
@@ -54,7 +53,7 @@ router.get('/farmers', authenticate, async (req, res) => {
           surname: farmer.surname || null,
           extension: farmer.extension || null
         },
-        association:farmer.AssociationName,
+        association: farmer.AssociationName,
         userId: farmer.user_id,
         name: `${farmer.firstname}${farmer.middlename ? ' ' + farmer.middlename : ''}${farmer.surname ? ' ' + farmer.surname : ''}${farmer.extension ? ' ' + farmer.extension : ''}`,
         email: farmer.email,
@@ -68,7 +67,8 @@ router.get('/farmers', authenticate, async (req, res) => {
         farmName: farmer.farmName,
         hectare: parseFloat(farmer.total_land_area),
         createdAt: farmer.created_at,
-        updatedAt: farmer.updated_at
+        updatedAt: farmer.updated_at,
+        accountStatus: farmer.accountStatus || null  // Added this line
       }))
     });
   } catch (error) {
