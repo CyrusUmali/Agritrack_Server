@@ -208,7 +208,7 @@ router.get('/farmer-statistics', authenticate,  async (req, res) => {
 router.post('/farmers', authenticate, async (req, res) => {
   try {
     const { name, email, phone, barangay, sectorId, imageUrl } = req.body;
-    const DEFAULT_IMAGE_URL = 'https://res.cloudinary.com/dk41ykxsq/image/upload/';
+    const DEFAULT_IMAGE_URL = 'https://res.cloudinary.com/dk41ykxsq/image/upload/v1759745073/user_rstauz.png';
     const DEFAULT_EMAIL = '---';
     const DEFAULT_PHONE = '---';
 
