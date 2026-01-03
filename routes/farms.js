@@ -987,10 +987,12 @@ router.get('/farms/:id', authenticate , async (req, res) => {
 
 
 
-router.get('/farms/by-product/:productId', authenticate , async (req, res) => {
+
+
+router.get('/farms/by-product/:productId', authenticate, async (req, res) => {
   try {
     const productId = parseInt(req.params.productId);
-    const currentYear = new Date().getFullYear();
+    const year = parseInt(req.query.year) || new Date().getFullYear(); // Get year from query or use current year
 
     if (isNaN(productId)) {
       return res.status(400).json({
@@ -999,12 +1001,31 @@ router.get('/farms/by-product/:productId', authenticate , async (req, res) => {
       });
     }
 
+    // Validate year
+    if (isNaN(year) || year < 2000 || year > 2100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid year'
+      });
+    }
+
+    // Get product name first
+    const [productResult] = await pool.query('SELECT name FROM farm_products WHERE id = ?', [productId]);
+    
+    if (productResult.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+    
+    const productName = productResult[0].name;
+
     const query = `
       SELECT 
         f.farm_id as id,
         f.farm_name as name,
-        f.parentBarangay ,
-        f.products,
+        f.parentBarangay,
         f.area,
         f.description,
         f.farmer_id,
@@ -1018,14 +1039,7 @@ router.get('/farms/by-product/:productId', authenticate , async (req, res) => {
 
     const [farms] = await pool.query(query, [JSON.stringify(productId)]);
 
-    // Get product names for mapping
-    const [products] = await pool.query('SELECT id, name FROM farm_products');
-    const productMap = {};
-    products.forEach(product => {
-      productMap[product.id] = product.name;
-    });
-
-    // Get yields for current year for each farm
+    // Get yields for the requested year for each farm
     const farmIds = farms.map(farm => farm.id);
     let yearlyYields = {};
 
@@ -1036,47 +1050,48 @@ router.get('/farms/by-product/:productId', authenticate , async (req, res) => {
         WHERE product_id = ? 
           AND farm_id IN (?)
           AND YEAR(harvest_date) = ?
+          AND status = 'Accepted'  -- Only include accepted yields
         GROUP BY farm_id
-      `, [productId, farmIds, currentYear]);
+      `, [productId, farmIds, year]);
 
       yields.forEach(yieldData => {
         yearlyYields[yieldData.farm_id] = {
-          volume: parseFloat(yieldData.total_volume) || 0
+          volume: parseFloat(yieldData.total_volume) || 0,
+          value: parseFloat(yieldData.total_value) || 0
         };
       });
     }
 
-    // Process farms to include product names and yield data
-    const processedFarms = farms.map(farm => {
-      let productEntries = [];
-      try {
-        const productIds = JSON.parse(farm.products || '[]');
-        productEntries = productIds.map(id => {
-          const productName = productMap[id];
-          return productName ? `${id}: ${productName}` : null;
-        }).filter(Boolean);
-      } catch (e) {
-        console.error('Error parsing products for farm', farm.id, e);
+    // Process farms - only include the requested product
+    const processedFarms = farms.map(farm => ({
+      id: farm.id,
+      name: farm.name,
+      parentBarangay: farm.parentBarangay,
+      area: farm.area ? parseFloat(farm.area) : 0,
+      hectare: farm.area ? (parseFloat(farm.area) / 10000).toFixed(2) : 0,
+      description: farm.description,
+      sector: farm.sector,
+      owner: farm.owner,
+      farmerId: farm.farmer_id,
+      product: {
+        id: productId,
+        name: productName
+      },
+      yield: yearlyYields[farm.id] || {
+        volume: 0,
+        value: 0
       }
-
-      return {
-        ...farm,
-        farmerId: farm.farmer_id,
-        products: productEntries,
-        area: farm.area ? parseFloat(farm.area) : 0,
-        hectare: farm.area ? (parseFloat(farm.area) / 10000).toFixed(2) : 0,
-        yield: yearlyYields[farm.id] || {
-          volume: 0,
-          value: 0
-        }
-      };
-    });
+    }));
 
     res.json({
       success: true,
       count: processedFarms.length,
+      product: {
+        id: productId,
+        name: productName
+      },
       farms: processedFarms,
-      currentYear: currentYear
+      year: year  // Return the year used for filtering
     });
 
   } catch (error) {
