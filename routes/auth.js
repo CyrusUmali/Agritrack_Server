@@ -139,7 +139,6 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
 
 
-
 router.post('/weather/reporter-summary', async (req, res) => {
   try {
     const { weatherData, forecastData, airQualityData, location, products } = req.body;
@@ -202,8 +201,10 @@ router.post('/weather/reporter-summary', async (req, res) => {
       }
     }
 
-    // Farm-focused weather prompt
-    const prompt = `You are an agricultural weather advisor. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for farm operations. Focus on agricultural impacts and actionable advice for farmers.
+    // Farm-focused weather prompt - UPDATED TO INCLUDE TAGLISH INSTRUCTION
+    const prompt = `You are an agricultural weather advisor speaking to Filipino farmers. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for farm operations. 
+
+IMPORTANT: Write in TAGLISH (mix of Tagalog and English) that Filipino farmers can easily understand. Use simple, conversational language.
 
 Current Weather:
 - Temperature: ${weatherData.temperature}°C (feels like ${weatherData.feelsLike}°C)
@@ -228,16 +229,16 @@ Tomorrow:
 
 ${productsPrompt}
 
-Create a brief agricultural weather advisory. Focus on:
-1. Field work suitability (spraying, planting, harvesting)
-2. Crop protection advice (frost risk, wind damage, disease risk, etc.)
-3. Livestock considerations
-4. Irrigation needs based on rainfall and humidity
-5. Soil moisture implications
+Create a brief agricultural weather advisory IN TAGLISH. Focus on:
+1. Field work suitability (spraying, planting, harvesting) - Pwede ba mag-field work?
+2. Crop protection advice (frost risk, wind damage, disease risk, etc.) - Mga babala para sa halaman
+3. Livestock considerations - Para sa mga alagang hayop
+4. Irrigation needs based on rainfall and humidity - Kailangan ba mag-dilig?
+5. Soil moisture implications - Tungkol sa lupa
 
-${hasProducts ? `Provide advice tailored to ${productList.length === 1 ? 'this crop' : 'these crops'}.` : 'Provide general farm weather advice suitable for mixed farming operations.'}
+${hasProducts ? `Provide advice tailored to ${productList.length === 1 ? 'this crop' : 'these crops'} IN TAGLISH.` : 'Provide general farm weather advice suitable for mixed farming operations IN TAGLISH.'}
 
-Speak directly to farmers using "you/your" for the farm operation. Be practical and specific.`;
+Speak directly to farmers using "kayo/inyo" or "you/your" for the farm operation. Be practical and specific. Use common Filipino farming terms.`;
 
     // List of models in priority order
     const models = [
@@ -294,11 +295,12 @@ Speak directly to farmers using "you/your" for the farm operation. Be practical 
     res.status(200).json({
       success: true,
       summary: summary.trim(),
-      message: 'Farm weather summary generated successfully',
+      message: '✅ May weather summary na para sa farm mo! Ito na ang advice para sa araw na ito.',
       metadata: {
         hasProducts: hasProducts,
         productCount: productList.length,
-        products: hasProducts ? productList : undefined
+        products: hasProducts ? productList : undefined,
+        note: hasProducts ? `Kasama sa advice ang mga tanim mo: ${productList.join(', ')}` : 'General farm advice lang muna'
       }
     });
 
