@@ -201,44 +201,112 @@ router.post('/weather/reporter-summary', async (req, res) => {
       }
     }
 
-    // Farm-focused weather prompt - UPDATED TO INCLUDE TAGLISH INSTRUCTION
-    const prompt = `You are an agricultural weather advisor speaking to Filipino farmers. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for farm operations. 
+ 
 
-IMPORTANT: Write in TAGLISH (mix of Tagalog and English) that Filipino farmers can easily understand. Use simple, conversational language.
 
-Current Weather:
-- Temperature: ${weatherData.temperature}°C (feels like ${weatherData.feelsLike}°C)
-- Condition: ${weatherData.description}
-- Humidity: ${weatherData.humidity}%
-- Wind Speed: ${weatherData.windSpeed} m/s
-- Visibility: ${weatherData.visibility / 1000} km
-- Clouds: ${weatherData.clouds}%
-${weatherData.rain1h ? `- Rainfall: ${weatherData.rain1h} mm in last hour` : ''}
+    // Option 1: Clean up the prompt to get cleaner output
+const improvedPrompt = `Ikaw ay isang eksperto sa agrikultura na nagbibigay ng rekomendasyon para sa pagtatanim ng ${crop}.
 
-${airQualityData ? `Air Quality: ${airQualityData.quality} (AQI ${airQualityData.aqi})` : ''}
+MGA KULANG NA PARAMETER:
+${deficiencyDetails}
 
-${forecastData && forecastData.length > 0 ? `
-Today's Forecast:
-- High: ${forecastData[0].tempMax}°C, Low: ${forecastData[0].tempMin}°C
-- Condition: ${forecastData[0].description}
+Magbigay ng detalyadong rekomendasyon sa natural na Filipino, walang numero o mga bullet points. Sundin ang sumusunod na daloy:
 
-Tomorrow:
-- High: ${forecastData[1]?.tempMax}°C, Low: ${forecastData[1]?.tempMin}°C
-- Condition: ${forecastData[1]?.description}
-` : ''}
+Simulan sa maikling pagsusuri ng kalagayan ng taniman.
 
-${productsPrompt}
+Pagkatapos, talakayin ang bawat kulang na parameter at magbigay ng praktikal na aksyon, rekomendadong sukat, at timeline para sa pagsasaayos.
 
-Create a brief agricultural weather advisory IN TAGLISH. Focus on:
-1. Field work suitability (spraying, planting, harvesting) - Pwede ba mag-field work?
-2. Crop protection advice (frost risk, wind damage, disease risk, etc.) - Mga babala para sa halaman
-3. Livestock considerations - Para sa mga alagang hayop
-4. Irrigation needs based on rainfall and humidity - Kailangan ba mag-dilig?
-5. Soil moisture implications - Tungkol sa lupa
+Magbigay din ng pinagsamang rekomendasyon na nakatuon sa pamamahala ng lupa, kapaligiran, pataba, at pinakamahusay na kasanayan.
 
-${hasProducts ? `Provide advice tailored to ${productList.length === 1 ? 'this crop' : 'these crops'} IN TAGLISH.` : 'Provide general farm weather advice suitable for mixed farming operations IN TAGLISH.'}
+Magtapos sa tatlong madaling sundin na hakbang at isang maikling panghuling payo.
 
-Speak directly to farmers using "kayo/inyo" or "you/your" for the farm operation. Be practical and specific. Use common Filipino farming terms.`;
+Gumamit ng simple at direktang Filipino. Tumutok sa mga praktikal at abot-kayang solusyon.`;
+
+// Option 2: Clean up the response on the server side before streaming
+function cleanupResponseChunk(text) {
+  return text
+    // Remove markdown asterisks for bold
+    .replace(/\*\*/g, '')
+    // Remove single asterisks for bullet points
+    .replace(/^\s*\*\s+/gm, '')
+    // Remove numbered list markers (1., 2., etc.)
+    .replace(/^\s*\d+\.\s+/gm, '')
+    // Remove section headers with numbers and colons
+    .replace(/^\s*\d+\.\s+[^:]+:\s*$/gm, '')
+    // Clean up extra whitespace
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Option 3: Clean up the full response at the end
+function cleanupFullResponse(fullResponse) {
+  return fullResponse
+    // Remove all markdown formatting
+    .replace(/\*\*/g, '')
+    .replace(/^\s*\*\s+/gm, '• ')  // Convert to simple bullets if needed
+    .replace(/^\s*\d+\.\s+/gm, '')
+    // Remove section headers (e.g., "1. Pangkalahatang Pagsusuri:")
+    .replace(/^\s*\d+\.\s+[A-Z][^:]+:\s*$/gm, '')
+    // Clean up the specific patterns you mentioned
+    .replace(/\*\d+\.\s+[^:]+:\*\*/g, '')
+    // Remove extra blank lines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Implementation in your streaming code:
+
+// For primary model (Google Gemini):
+for await (const chunk of result.stream) {
+  const text = chunk.text();
+  if (text) {
+    const cleanedText = cleanupResponseChunk(text);
+    fullResponse += text;  // Keep original for full response
+    chunkCount++;
+
+    // Send cleaned chunk to client
+    res.write(`data: ${JSON.stringify({
+      chunk: cleanedText,
+      done: false
+    })}\n\n`);
+  }
+}
+
+// For OpenRouter streaming:
+stream.on('data', (chunk) => {
+  try {
+    const lines = chunk.toString().split('\n');
+    for (const line of lines) {
+      if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+        const data = JSON.parse(line.substring(6));
+        if (data.choices?.[0]?.delta?.content) {
+          const text = data.choices[0].delta.content;
+          const cleanedText = cleanupResponseChunk(text);
+          fullResponse += text;
+          chunkCount++;
+
+          res.write(`data: ${JSON.stringify({
+            chunk: cleanedText,
+            done: false
+          })}\n\n`);
+        }
+      }
+    }
+  } catch (parseError) {
+    console.warn('Parse error in stream:', parseError.message);
+  }
+});
+
+// When sending final response:
+const cleanedFullResponse = cleanupFullResponse(fullResponse);
+
+res.write(`data: ${JSON.stringify({
+  chunk: '',
+  done: true,
+  fullResponse: cleanedFullResponse
+})}\n\n`);
+
+
 
     // List of models in priority order
     const models = [
@@ -359,13 +427,53 @@ function generateOTP() {
 
 
 
-// Suitability AI suggestions endpoint (streaming)
-router.post('/suitability/suggestions', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.firebaseUid;
-    const { crop, deficiencies } = req.body;
 
-    console.log(`🌾 Generating suggestions for user ${userId}, crop: ${crop}`);
+
+
+
+// Updated cleanup function that handles the actual patterns in your response
+function cleanupResponseText(text) {
+  return text
+    // Remove markdown bold markers
+    .replace(/\*\*/g, '')
+    // Remove numbered section headers (e.g., "1. Pangkalahatang Pagsusuri:")
+    .replace(/^\d+\.\s+[^:\n]+:\s*$/gm, '')
+    // Remove numbered section headers inline (e.g., "**1. Pangkalahatang Pagsusuri:**")
+    .replace(/\d+\.\s+[^:\n]+:\s*/g, '')
+    // Remove bullet points with asterisks, keep the content
+    .replace(/^\s*\*\s+/gm, '')
+    // Remove nested bullet points (with indentation)
+    .replace(/^\s+\*\s+/gm, '')
+    // Clean up multiple newlines (more than 2)
+    .replace(/\n{3,}/g, '\n\n')
+    // Remove leading/trailing whitespace from each line
+    .split('\n')
+    .map(line => line.trim())
+    .join('\n')
+    .trim();
+}
+
+// Alternative: Keep some structure but make it cleaner
+function cleanupWithStructure(text) {
+  return text
+    // Remove markdown bold
+    .replace(/\*\*/g, '')
+    // Convert numbered headers to plain text
+    .replace(/^(\d+)\.\s+([^:\n]+):\s*$/gm, '$2')
+    // Remove bullet asterisks but keep content
+    .replace(/^\s*\*\s+/gm, '• ')
+    // Clean nested bullets
+    .replace(/^\s+\*\s+/gm, '  • ')
+    // Clean up whitespace
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Implementation in your router code:
+
+router.post('/suitability/suggestions', async (req, res) => {
+  try {
+    const { crop, deficiencies } = req.body;
 
     if (!crop || !deficiencies || Object.keys(deficiencies).length === 0) {
       return res.status(400).json({
@@ -374,7 +482,7 @@ router.post('/suitability/suggestions', authenticate, async (req, res) => {
       });
     }
 
-    // Build deficiency details for prompt
+    // Build deficiency details
     const parameterNames = {
       'soil_ph': 'Soil pH',
       'fertility_ec': 'Soil Fertility (EC)',
@@ -391,28 +499,22 @@ router.post('/suitability/suggestions', authenticate, async (req, res) => {
       })
       .join('\n');
 
+    // Updated prompt - ask for cleaner output from the start
     const prompt = `Ikaw ay isang eksperto sa agrikultura na nagbibigay ng rekomendasyon para sa pagtatanim ng ${crop}.
 
 MGA KULANG NA PARAMETER:
 ${deficiencyDetails}
 
-MGA KINAKAILANGAN SA FORMAT:
-- Gumamit ng malinaw at simpleng wika na maintindihan ng mga magsasaka
-- Ayusin ang mga rekomendasyon ayon sa kategorya
-- Gumamit ng bullet points na nagsisimula sa •
-- Panatilihing maikli ngunit kumpleto ang bawat rekomendasyon
-- Magsama ng mga tukoy na aksyon at sukat kung naaangkop
-- Tumuon sa praktikal at maipapatupad na payo
+Magbigay ng detalyadong rekomendasyon sa natural na Filipino. Huwag gumamit ng mga numero, asterisks, o markdown formatting. Isulat ito bilang natural na talata na madaling basahin.
 
-ISTRAKTURA NG REKOMENDASYON:
-1. Magsimula sa pangkalahatang pagsusuri
-2. Magbigay ng tukoy na rekomendasyon para sa bawat kulang na parameter
-3. Magsama ng mga teknik sa pamamahala ng lupa
-4. Magmungkahi ng mga pagsasaayos sa kapaligiran
-5. Magbigay ng mga rekomendasyon sa pataba kasama ang dami
-6. Magsama ng anumang karagdagang pinakamahusay na kasanayan
+Isama ang sumusunod:
+- Maikling pagsusuri sa kalagayan ng taniman
+- Para sa bawat kulang na parameter: praktikal na aksyon, rekomendadong sukat, at timeline
+- Pinagsamang rekomendasyon na nakatuon sa lupa, kapaligiran, pataba, at best practices
+- Tatlong madaling sundin na hakbang
+- Maikling panghuling payo
 
-Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
+Gumamit ng simple at direktang Filipino. Tumutok sa praktikal at abot-kayang solusyon.`;
 
     // Set headers for SSE
     res.setHeader('Content-Type', 'text/event-stream');
@@ -422,24 +524,25 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
 
     console.log(`🤖 Generating recommendations for ${crop}...`);
 
-    // Try primary model first
     let primaryModelSuccess = false;
     let fullResponse = '';
     let chunkCount = 0;
 
     try {
-      // Generate streaming response from primary model
       const result = await model.generateContentStream(prompt);
 
       for await (const chunk of result.stream) {
         const text = chunk.text();
         if (text) {
           fullResponse += text;
+          
+          // Clean the chunk before sending
+          const cleanedChunk = cleanupResponseText(text);
           chunkCount++;
 
-          // Send chunk to client
+          // Send cleaned chunk to client
           res.write(`data: ${JSON.stringify({
-            chunk: text,
+            chunk: cleanedChunk,
             done: false
           })}\n\n`);
 
@@ -455,21 +558,16 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
     } catch (primaryError) {
       console.error(`❌ Primary model failed:`, primaryError.message);
       
-      // Fallback to OpenRouter models
-      console.log(`🔄 Falling back to OpenRouter models...`);
-      
+      // Fallback to OpenRouter (same cleanup logic)
       const openRouterApiKey = process.env.OPEN_ROUTER_API_KEY;
       if (!openRouterApiKey) {
         throw new Error('OPEN_ROUTER_API_KEY not configured');
       }
 
-      // List of models in priority order (streaming capable models)
       const openRouterModels = [ 
-
         "google/gemini-2.5-flash",
         "google/openai/gpt-4o-mini",
         "deepseek/deepseek-v3.2"
-
       ];
 
       let openRouterSuccess = false;
@@ -485,7 +583,7 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
               model: model,
               messages: [{ role: "user", content: prompt }],
               max_tokens: 2048,
-              stream: true  // Enable streaming
+              stream: true
             },
             {
               headers: {
@@ -498,7 +596,6 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
             }
           );
 
-          // Stream the response from OpenRouter
           const stream = response.data;
           openRouterSuccess = true;
 
@@ -508,14 +605,16 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
               for (const line of lines) {
                 if (line.startsWith('data: ') && !line.includes('[DONE]')) {
                   const data = JSON.parse(line.substring(6));
-                  if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                  if (data.choices?.[0]?.delta?.content) {
                     const text = data.choices[0].delta.content;
                     fullResponse += text;
+                    
+                    // Clean the chunk
+                    const cleanedChunk = cleanupResponseText(text);
                     chunkCount++;
 
-                    // Send chunk to client
                     res.write(`data: ${JSON.stringify({
-                      chunk: text,
+                      chunk: cleanedChunk,
                       done: false
                     })}\n\n`);
                   }
@@ -527,12 +626,15 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
           });
 
           stream.on('end', () => {
-            console.log(`✅ Completed streaming ${chunkCount} chunks from OpenRouter (${model})`);
-            // Send final message
+            console.log(`✅ Completed streaming from OpenRouter (${model})`);
+            
+            // Clean the full response before sending
+            const cleanedFullResponse = cleanupResponseText(fullResponse);
+            
             res.write(`data: ${JSON.stringify({
               chunk: '',
               done: true,
-              fullResponse: fullResponse
+              fullResponse: cleanedFullResponse
             })}\n\n`);
             res.end();
           });
@@ -541,26 +643,22 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
             console.error(`Stream error with model ${model}:`, error.message);
             lastError = error;
             openRouterSuccess = false;
-            // Continue to next model
           });
 
-          // Wait for stream to finish
           await new Promise((resolve, reject) => {
             stream.on('end', resolve);
             stream.on('error', reject);
           });
 
-          if (openRouterSuccess) break; // Stop if successful
+          if (openRouterSuccess) break;
 
         } catch (openRouterError) {
           const errData = openRouterError.response?.data;
-          // If quota error (402), skip to next model
           if (errData?.error?.code === 402) {
-            console.warn(`Quota exceeded for model ${model}, trying next model...`);
+            console.warn(`Quota exceeded for model ${model}, trying next...`);
             lastError = errData;
             continue;
           }
-          // For other errors, log and try next model
           console.warn(`Error with OpenRouter model ${model}:`, errData || openRouterError.message);
           lastError = errData || openRouterError;
         }
@@ -571,12 +669,14 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
       }
     }
 
-    // If primary model was successful, send final message
+    // If primary model was successful, send cleaned final message
     if (primaryModelSuccess) {
+      const cleanedFullResponse = cleanupResponseText(fullResponse);
+      
       res.write(`data: ${JSON.stringify({
         chunk: '',
         done: true,
-        fullResponse: fullResponse
+        fullResponse: cleanedFullResponse
       })}\n\n`);
       res.end();
     }
@@ -596,6 +696,8 @@ Mangyaring magbigay ng komprehensibong rekomendasyon sa agrikultura:`;
     }
   }
 });
+
+
 
 
 
