@@ -201,112 +201,48 @@ router.post('/weather/reporter-summary', async (req, res) => {
       }
     }
 
- 
+   // Farm-focused weather prompt - UPDATED FOR PERSONAL ADDRESS
+const prompt = `You are an agricultural weather advisor speaking directly to a Filipino farmer. Based on the following weather data, create a practical, concise weather summary (2-3 sentences max) specifically for THIS FARMER'S operations. 
 
+IMPORTANT: 
+1. Write in TAGLISH (mix of Tagalog and English) that Filipino farmers can easily understand.
+2. Speak DIRECTLY to the farmer using "IKAW/MO/IYO" (singular) - NOT "kayo/inyo" (plural).
+3. Use the farmer's name if provided, otherwise use direct singular address like "Ka-Farmer" or just direct conversational style.
+4. Be personal as if giving advice to one specific farmer.
 
-    // Option 1: Clean up the prompt to get cleaner output
-const improvedPrompt = `Ikaw ay isang eksperto sa agrikultura na nagbibigay ng rekomendasyon para sa pagtatanim ng ${crop}.
+Current Weather:
+- Temperature: ${weatherData.temperature}°C (feels like ${weatherData.feelsLike}°C)
+- Condition: ${weatherData.description}
+- Humidity: ${weatherData.humidity}%
+- Wind Speed: ${weatherData.windSpeed} m/s
+- Visibility: ${weatherData.visibility / 1000} km
+- Clouds: ${weatherData.clouds}%
+${weatherData.rain1h ? `- Rainfall: ${weatherData.rain1h} mm in last hour` : ''}
 
-MGA KULANG NA PARAMETER:
-${deficiencyDetails}
+${airQualityData ? `Air Quality: ${airQualityData.quality} (AQI ${airQualityData.aqi})` : ''}
 
-Magbigay ng detalyadong rekomendasyon sa natural na Filipino, walang numero o mga bullet points. Sundin ang sumusunod na daloy:
+${forecastData && forecastData.length > 0 ? `
+Today's Forecast:
+- High: ${forecastData[0].tempMax}°C, Low: ${forecastData[0].tempMin}°C
+- Condition: ${forecastData[0].description}
 
-Simulan sa maikling pagsusuri ng kalagayan ng taniman.
+Tomorrow:
+- High: ${forecastData[1]?.tempMax}°C, Low: ${forecastData[1]?.tempMin}°C
+- Condition: ${forecastData[1]?.description}
+` : ''}
 
-Pagkatapos, talakayin ang bawat kulang na parameter at magbigay ng praktikal na aksyon, rekomendadong sukat, at timeline para sa pagsasaayos.
+${productsPrompt}
 
-Magbigay din ng pinagsamang rekomendasyon na nakatuon sa pamamahala ng lupa, kapaligiran, pataba, at pinakamahusay na kasanayan.
+Create a brief agricultural weather advisory IN TAGLISH speaking DIRECTLY TO THE FARMER. Focus on:
+1. Field work suitability for YOUR farm (spraying, planting, harvesting) - Pwede ka bang mag-field work ngayon?
+2. Crop protection advice for YOUR crops - Mga babala para sa MGA TANIM MO
+3. Livestock considerations for YOUR animals - Para sa MGA ALAGA MO
+4. Irrigation needs for YOUR fields - Kailangan mo bang mag-dilig?
+5. Soil moisture implications for YOUR land - Tungkol sa LUPA MO
 
-Magtapos sa tatlong madaling sundin na hakbang at isang maikling panghuling payo.
+${hasProducts ? `Provide advice tailored specifically to YOUR ${productList.length === 1 ? 'crop' : 'crops'} IN TAGLISH.` : 'Provide personal farm weather advice suitable for your mixed farming operations IN TAGLISH.'}
 
-Gumamit ng simple at direktang Filipino. Tumutok sa mga praktikal at abot-kayang solusyon.`;
-
-// Option 2: Clean up the response on the server side before streaming
-function cleanupResponseChunk(text) {
-  return text
-    // Remove markdown asterisks for bold
-    .replace(/\*\*/g, '')
-    // Remove single asterisks for bullet points
-    .replace(/^\s*\*\s+/gm, '')
-    // Remove numbered list markers (1., 2., etc.)
-    .replace(/^\s*\d+\.\s+/gm, '')
-    // Remove section headers with numbers and colons
-    .replace(/^\s*\d+\.\s+[^:]+:\s*$/gm, '')
-    // Clean up extra whitespace
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-// Option 3: Clean up the full response at the end
-function cleanupFullResponse(fullResponse) {
-  return fullResponse
-    // Remove all markdown formatting
-    .replace(/\*\*/g, '')
-    .replace(/^\s*\*\s+/gm, '• ')  // Convert to simple bullets if needed
-    .replace(/^\s*\d+\.\s+/gm, '')
-    // Remove section headers (e.g., "1. Pangkalahatang Pagsusuri:")
-    .replace(/^\s*\d+\.\s+[A-Z][^:]+:\s*$/gm, '')
-    // Clean up the specific patterns you mentioned
-    .replace(/\*\d+\.\s+[^:]+:\*\*/g, '')
-    // Remove extra blank lines
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-// Implementation in your streaming code:
-
-// For primary model (Google Gemini):
-for await (const chunk of result.stream) {
-  const text = chunk.text();
-  if (text) {
-    const cleanedText = cleanupResponseChunk(text);
-    fullResponse += text;  // Keep original for full response
-    chunkCount++;
-
-    // Send cleaned chunk to client
-    res.write(`data: ${JSON.stringify({
-      chunk: cleanedText,
-      done: false
-    })}\n\n`);
-  }
-}
-
-// For OpenRouter streaming:
-stream.on('data', (chunk) => {
-  try {
-    const lines = chunk.toString().split('\n');
-    for (const line of lines) {
-      if (line.startsWith('data: ') && !line.includes('[DONE]')) {
-        const data = JSON.parse(line.substring(6));
-        if (data.choices?.[0]?.delta?.content) {
-          const text = data.choices[0].delta.content;
-          const cleanedText = cleanupResponseChunk(text);
-          fullResponse += text;
-          chunkCount++;
-
-          res.write(`data: ${JSON.stringify({
-            chunk: cleanedText,
-            done: false
-          })}\n\n`);
-        }
-      }
-    }
-  } catch (parseError) {
-    console.warn('Parse error in stream:', parseError.message);
-  }
-});
-
-// When sending final response:
-const cleanedFullResponse = cleanupFullResponse(fullResponse);
-
-res.write(`data: ${JSON.stringify({
-  chunk: '',
-  done: true,
-  fullResponse: cleanedFullResponse
-})}\n\n`);
-
-
+Speak directly to the farmer using "ikaw/mo/iyo" (singular). Be practical, specific, and personal as if advising one farmer about their own farm. Use common Filipino farming terms.`;
 
     // List of models in priority order
     const models = [
