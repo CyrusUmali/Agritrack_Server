@@ -129,8 +129,7 @@ app.get('/download/apk/:filename', (req, res) => {
 app.get('/api', (req, res) => {
   res.status(200).json({ message: 'API is running.' });
 });
-
-// Wake-up endpoint - also starts self-ping when called
+ 
 app.get('/wakeup', (req, res) => {
   // Start self-ping if not already running or if it's been more than 4 hours
   if (!selfPingStartTime || (Date.now() - selfPingStartTime) >= MAX_SELF_PING_DURATION) {
@@ -193,6 +192,11 @@ app.use('/yields', yieldsRoutes);
 
 const assocsRoutes = require('./routes/assocs.js');
 app.use('/assocs', assocsRoutes);
+ 
+
+const aiRoutes = require('./routes/ai.js');
+app.use('/ai', aiRoutes);
+
 
 const reportRoutes = require('./routes/reports.js');
 app.use('/reports', reportRoutes);
@@ -228,9 +232,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   
   // Initial Aicrop ping
   setTimeout(pingAicropService, 5000);
-  
-  // Note: We don't automatically start self-ping on server start
-  // It will only start when the /wakeup endpoint is called
+   
 });
 
 // Clean up intervals when server stops
