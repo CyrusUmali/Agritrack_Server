@@ -146,42 +146,7 @@ app.get('/wakeup', (req, res) => {
   });
   console.log('Wake-up endpoint hit');
 });
-
-// Manual control endpoints
-app.post('/self-ping/start', (req, res) => {
-  startSelfPing();
-  res.status(200).json({ 
-    status: 'started',
-    message: 'Self-ping service started for 4 hours'
-  });
-});
-
-app.post('/self-ping/stop', (req, res) => {
-  if (selfPingInterval) {
-    clearInterval(selfPingInterval);
-    selfPingStartTime = null;
-    console.log('Self-ping service manually stopped');
-    res.status(200).json({ status: 'stopped' });
-  } else {
-    res.status(200).json({ status: 'not-running' });
-  }
-});
-
-app.get('/self-ping/status', (req, res) => {
-  const active = selfPingStartTime !== null && 
-                (Date.now() - selfPingStartTime) < MAX_SELF_PING_DURATION;
-  
-  let remainingTime = 0;
-  if (active) {
-    remainingTime = MAX_SELF_PING_DURATION - (Date.now() - selfPingStartTime);
-  }
-  
-  res.status(200).json({ 
-    active,
-    start_time: selfPingStartTime ? new Date(selfPingStartTime).toISOString() : null,
-    remaining_minutes: Math.round(remainingTime / (60 * 1000))
-  });
-});
+ 
 
 // Auth routes and other routes...
 const authRoutes = require('./routes/auth.js');
