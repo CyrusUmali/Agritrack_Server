@@ -105,6 +105,33 @@ let aicropPingInterval;
 
 
 
+
+
+
+
+
+
+
+app.get('/download/windows/:filename', (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(__dirname, 'public', 'windows', filename);
+  
+  // Check if file exists
+  if (fs.existsSync(filePath)) {
+    // Set headers for file download
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/x-msdownload'); // MIME type for .exe files
+    
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+  } else {
+    res.status(404).json({ message: 'Windows setup file not found' });
+  }
+});
+
+
+
 // APK download endpoint
 app.get('/download/apk/:filename', (req, res) => {
   const filename = req.params.filename;
